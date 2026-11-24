@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment2.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Build site (app + Firebase sign-in helper)
@@ -34,8 +34,16 @@ jobs:
           touch _site/.nojekyll
           ls -R _site | head -40
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
+          include-hidden-files: true
       - id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      # GitHub đôi khi báo "No artifacts named github-pages" dù đã tải lên → đợi rồi thử lại
+      - if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - id: deployment2
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
