@@ -2260,8 +2260,15 @@ function hcSame(it){
   return D.inbox.find(x=>x.id!==it.id&&x.msgId!==it.msgId&&x.status!=='ignored'&&x.status!=='skip'&&HC_TX(x.kind)&&+x.amount===+it.amount&&(!x.bank||!it.bank||x.bank===it.bank)&&(!x.last4||!it.last4||x.last4===it.last4)&&String(x.ts||'').length>=16&&Math.abs(new Date(String(x.ts).slice(0,16)).getTime()-t0)<=((x.src==='android')!==(it.src==='android')?1800000:120000))||null;
 }
 /* Tạo bản ghi hàng chờ từ một email */
+/* Một số ngân hàng (VD VIB Max) gửi phần "chữ thường" của email là nguyên mã HTML → đổi sang chữ trước khi đọc */
+function hcHtml2Text(t){
+  t=String(t||'');if(!/<\/?(?:html|body|table|div|td|p|br)\b|<!doctype/i.test(t))return t;
+  t=t.replace(/<(style|head|script|title)[^>]*>[\s\S]*?<\/\1>/gi,' ').replace(/<!--[\s\S]*?-->/g,' ').replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h\d|table)>/gi,'\n').replace(/<[^>]+>/g,' ');
+  try{const x=document.createElement('textarea');x.innerHTML=t;t=x.value}catch(e){t=t.replace(/&nbsp;/g,' ').replace(/&amp;/g,'&')}
+  return t.replace(/[ \t\u00a0]+/g,' ').replace(/\s*\n\s*/g,'\n').trim();
+}
 function hcFromMail(msg){
-  let subj=String(msg.subject||'');const body=String(msg.plaintextBody||msg.snippet||'').slice(0,5000);
+  let subj=String(msg.subject||'');const body=hcHtml2Text(msg.plaintextBody||msg.snippet||'').slice(0,5000);
   /* thư do script MBT chuyển từ Gmail của chủ thẻ: tiêu đề có “[MBT-MAIL] Tên chủ thẻ” */
   const mmt=subj.match(/\[MBT-MAIL\]\s*(.*)$/i),mmOwner=mmt?mmt[1].trim():'';if(mmt)subj=subj.slice(0,mmt.index).replace(/^\s*(?:fwd?|fw|tr)\s*:\s*/i,'').trim();
   /* bản sao do script MBT tự chuyển từ chính hộp mail này (người gửi = người nhận = chủ thẻ ghi trong tiêu đề) → thư gốc đã có sẵn, bỏ qua để không trùng */
@@ -2323,7 +2330,8 @@ async function hcSync(auto){
   for(let k=0;k<20&&!D.inbox.length;k++)await new Promise(r=>setTimeout(r,250));
   await hcHeal();
   /* đã biết = có trong hàng chờ HOẶC đã ghi vào sổ — không bao giờ ghi đè mục đã duyệt/bỏ qua về “chờ duyệt” */
-  const known=new Set(D.inbox.map(x=>x.id).concat(D.txs.map(t=>t.src).filter(Boolean)));let tok='',nNew=0,nTx=0,pages=0;
+  /* thư bị bộ đọc cũ bỏ qua tự động (không đọc được nội dung) được đọc lại 1 lần bằng bộ đọc mới (pv=2: đọc được email dạng HTML) */
+  const known=new Set(D.inbox.filter(x=>!(x.status==='ignored'&&x.kind==='other'&&!x.src&&!(x.pv>=2))).map(x=>x.id).concat(D.txs.map(t=>t.src).filter(Boolean)));let tok='',nNew=0,nTx=0,pages=0;
   const call=(tool,input)=>mcp.callTool(HC_SRV,tool,input,{cache:false}).then(r=>r.payload||{});
   try{
     do{
@@ -2334,7 +2342,7 @@ async function hcSync(auto){
         const t=await call('get_thread',{threadId:th.id,messageFormat:'PLAIN_TEXT'});
         for(const m of (t.messages||[])){
           if(known.has('g_'+m.id))continue;known.add('g_'+m.id);
-          const r0=hcFromMail(m);if(!r0){await put('inbox',{id:'g_'+m.id,status:'ignored',kind:'other',recv:m.date||'',owner:((String(m.subject||'').match(/\[MBT-MAIL\]\s*(.*)$/i)||[])[1]||'').trim()});continue}
+          const r0=hcFromMail(m);if(!r0){await put('inbox',{id:'g_'+m.id,status:'ignored',kind:'other',pv:2,recv:m.date||'',owner:((String(m.subject||'').match(/\[MBT-MAIL\]\s*(.*)$/i)||[])[1]||'').trim()});continue}
           for(const it of [].concat(r0).map(hcFix)){if(it.id!=='g_'+m.id&&known.has(it.id))continue;known.add(it.id);{const ex=D.inbox.find(x=>x.id===it.id);if(ex&&ex.status!=='pending')continue}{const dp=hcSame(it);if(dp){if(it.src!=='android'&&dp.src==='android'&&dp.status==='pending'){dp.status='skip';dp.dupOf=it.id;dp.note=((dp.note||'')+' · Đã có email cùng giao dịch (dùng số trên email)').replace(/^ · /,'');await put('inbox',dp)}else{it.status='skip';it.dupOf=dp.id;it.note=((it.note||'')+(it.src==='android'&&dp.src!=='android'?' · Trùng email cùng giao dịch':' · Trùng thư khác cùng giao dịch')).replace(/^ · /,'')}}}await put('inbox',it);nNew++;if(it.status==='pending')nTx++}
           UI.hcMsg='Đã đọc '+nNew+' email…';render();
         }
