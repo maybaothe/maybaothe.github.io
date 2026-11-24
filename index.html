@@ -2052,7 +2052,7 @@ function ntfMatch(p,cards,owner){
 /* ===== Bộ đọc email VIB, SHB, sao kê BIDV ===== */
 const bkSkip=n=>/otp|mat khau|kich hoat|dang ky|khoa|cap nhat|thay doi|bieu phi|chinh sach|uu dai|khuyen mai|\[qc\]|tham gia|gia han|phat hanh|hop dong|tra gop|lai suat|lai vay|lai tien gui|no goc|thiet bi|xac thuc|apple pay|google pay|samsung pay|sao ke diem|sao ke hoan tien|sao ke tich diem|nang cap|bao tri|doi qua(?! tien mat)|qua tang|thu moi|chuc mung|khao sat/.test(n);
 const fmtV=n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
-const BK_SENDERS=/saokethebidv@bidv|card\.vib\.com\.vn|max\.support@vib|myvib\.vib\.com\.vn|@shb\.com\.vn|tpb\.com\.vn|msb\.com\.vn|vpb\.com\.vn/i;
+const BK_SENDERS=/no-reply@cake\.vn|saokethebidv@bidv|card\.vib\.com\.vn|max\.support@vib|myvib\.vib\.com\.vn|@shb\.com\.vn|tpb\.com\.vn|msb\.com\.vn|vpb\.com\.vn/i;
 function bankParse(subj,body,meta={}){
   const from=String(meta.from||'');
   if(!BK_SENDERS.test(from+' '+String(body||'').slice(0,3000)))return null;
@@ -2065,6 +2065,32 @@ function bankParse(subj,body,meta={}){
   const L4=()=>{const m=t.match(/(?:\d{4,6}[\s-]*)?[xX*]{3,}[\sxX*-]*(\d{4})\b/);return m?m[1]:''};
   const base=(bank,kind)=>({bank,kind,amount:0,sign:0,last4:L4(),first:'',cardName:'',holder:'',merchant:'',ts:meta.date||'',appr:'',txType:subj.slice(0,80),cur:'VND',status:'',raw:t.slice(0,900)});
   const holder=F(/(?:Chủ Thẻ|Tên chủ thẻ)\s*:\s*([A-Z][A-Z ]+?)\s+(?:-|Số|Giao|Thời|Ngày|Tại)/)||F(/K[íi]nh gửi:?\s*(?:Quý khách hàng|Quý khách)?\s*(?:Dear Valued Customer\s*)?:?\s*([A-ZĐ][A-ZĐ ]{4,}?)\s*,?\s+(?:Ngân hàng|SHB|VIB)/);
+  /* ---- Cake by VPBank (no-reply@cake.vn) — gửi thẳng, hoặc chuyển tiếp tay (người gửi là chủ thẻ, thân thư có “Từ: … <no-reply@cake.vn>”) ---- */
+  if(/cake\.vn/i.test(from)||/no-reply@cake\.vn/i.test(String(body||'').slice(0,1500))){
+    const r=base('Cake','other');r.holder='';
+    const c4=F(/Số thẻ\s*:?\s*(?:\d{4,6})?[x*•\s]*(\d{4})\b/);if(c4)r.last4=c4;
+    const sj=sN.replace(/^\s*(?:fwd?|tr)\s*:\s*/,'');
+    if(/thanh toan du no/.test(sj)){
+      r.kind='payment';r.amount=A(/Số tiền thanh toán\s*:?\s*([\d.,]+)/);r.ts=T(F(/Ngày giao dịch\s*:?\s*(\d{1,2}:\d{2}\s+\d{1,2}\/\d{1,2}\/\d{4})/))||r.ts;
+      r.txType='Thanh toán dư nợ thẻ';r.merchant='Thanh toán dư nợ thẻ Cake';
+      if(/Trạng thái giao dịch\s*:?\s*(?!Thành công)\S/i.test(t)){r.kind='other';r.note='Thanh toán dư nợ không thành công'}
+      return r}
+    if(/giao dich qua the/.test(sj)&&/that bai|khong thanh cong/.test(sj)){
+      r.amount=A(/Số tiền giao dịch\s*:?\s*([\d.,]+)/);r.ts=T(F(/Thời gian giao dịch\s*:?\s*(\d{1,2}:\d{2}\s+\d{1,2}\/\d{1,2}\/\d{4})/))||r.ts;
+      r.merchant=F(/Nhà cung cấp\s*:?\s*(.+?)\s+Lý do/);r.note='Giao dịch không thành công · '+F(/Lý do thất bại\s*:?\s*(.+?)\s+(?:Nếu|Để|Cảm)/);r.noReview=true;return r}
+    if(/giao dich qua the/.test(sj)){
+      r.kind='spend';r.amount=A(/Giá trị\s*:?\s*([\d.,]+)\s*(?:đ|VN[DĐ]|₫)/);
+      const cu=F(/Giá trị\s*:?\s*[\d.,]+\s*([A-Z]{3})\b/);if(cu&&!/^VN[DĐ]$/.test(cu)){r.cur=cu;r.note='Giao dịch ngoại tệ ('+cu+'): kiểm tra số tiền VND trên sao kê'}
+      r.ts=T(F(/Vào lúc\s*:?\s*(\d{1,2}:\d{2}\s+\d{1,2}\/\d{1,2}\/\d{4})/))||r.ts;
+      r.merchant=F(/Tại\s*:?\s*(.+?)\s+Nguồn tiền/)||F(/Tại\s*:?\s*(.{1,60}?)\s+(?:Tình trạng|Để biết)/);
+      r.txType=F(/Giao dịch\s*:?\s*(.+?)\s+Giá trị/)||r.txType;
+      const ty=ntfNz(r.txType);if(/hoan|refund|tra lai/.test(ty))r.kind='refund';
+      if(/Tình trạng\s*:?\s*(?!Thành công)\S/i.test(t)){r.kind='other';r.note='Giao dịch không thành công · '+F(/Tình trạng\s*:?\s*(\S+(?:\s\S+)?)/);r.noReview=true}
+      return r}
+    if(/sao ke/.test(sj)){r.note='Sao kê thẻ Cake (file PDF có mật khẩu, thư không ghi số tiền) — dư nợ tự tính ở tab Lịch thanh toán';r.noReview=true;return r}
+    if(bkSkip(sj)||/canh bao dang nhap|tai khoan thanh toan|tiet kiem|tra lai/.test(sj))return{skip:true};
+    return r;
+  }
   /* ---- VIB ---- */
   if(/vib\.com\.vn/i.test(from)){
     const r=base('VIB','other');r.holder=holder;
@@ -2311,7 +2337,7 @@ function hcFromMail(msg){
   const pk=bankParse(subj,rawB.slice(0,20000),meta);
   if(pk&&pk.skip)return null;
   const mk=(p,i)=>({id:'g_'+msg.id+(i?'_'+i:''),msgId:msg.id,threadId:msg.threadId||'',recv:msg.date||'',src,owner:p.holder||owner,from:msg.sender||'',subject:subj.slice(0,200),...p,status:HC_TX(p.kind)?'pending':'info'});
-  if(pk){const L=[].concat(pk).map(mk);L.forEach(x=>{if(x.kind==='other'&&!/không thành công/i.test(x.note||'')){x.review=true}else if(HC_TX(x.kind)&&!(+x.amount>0)){x.review=true;x.status='info'}});return L.length>1?L:L[0]}
+  if(pk){const L=[].concat(pk).map(mk);L.forEach(x=>{if(x.noReview){delete x.noReview}else if(x.kind==='other'&&!/không thành công/i.test(x.note||'')){x.review=true}else if(HC_TX(x.kind)&&!(+x.amount>0)){x.review=true;x.status='info'}});return L.length>1?L:L[0]}
   const pb=bidvParse(subj+'\n'+body,meta),p=pb||ntfParse(text,meta);
   if(pb&&pb.holder)owner=pb.holder;
   const rv=(p.kind==='other'&&!/không thành công/i.test(p.note||'')&&/bidv|vib|shb|vpb|tpb|msb|sacom|techcom/i.test(String(msg.sender||'')))||(HC_TX(p.kind)&&!(+p.amount>0));
