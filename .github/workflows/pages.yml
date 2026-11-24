@@ -23,12 +23,14 @@ jobs:
           mkdir -p _site/__/auth _site/__/firebase
           cp -r index.html manifest.webmanifest sw.js icons _site/
           B=https://maybaothe.firebaseapp.com
-          curl -fsSL $B/__/auth/handler        -o _site/__/auth/handler.html
-          curl -fsSL $B/__/auth/handler.js     -o _site/__/auth/handler.js
-          curl -fsSL $B/__/auth/experiments.js -o _site/__/auth/experiments.js
-          curl -fsSL $B/__/auth/iframe         -o _site/__/auth/iframe.html
-          curl -fsSL $B/__/auth/iframe.js      -o _site/__/auth/iframe.js
-          curl -fsSL $B/__/firebase/init.json  -o _site/__/firebase/init.json
+          get(){ code=$(curl -sSL -w '%{http_code}' -o "$2" "$B$1"); echo "$1 -> $code"; [ "$code" = 200 ] || rm -f "$2"; }
+          get /__/auth/handler        _site/__/auth/handler.html
+          get /__/auth/handler.js     _site/__/auth/handler.js
+          get /__/auth/experiments.js _site/__/auth/experiments.js
+          get /__/auth/iframe         _site/__/auth/iframe.html
+          get /__/auth/iframe.js      _site/__/auth/iframe.js
+          get /__/firebase/init.json  _site/__/firebase/init.json
+          test -s _site/__/auth/handler.html && test -s _site/__/auth/handler.js
           touch _site/.nojekyll
           ls -R _site | head -40
       - uses: actions/configure-pages@v5
