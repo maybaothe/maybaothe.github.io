@@ -426,19 +426,22 @@ let db=null,dl=null,D={cards:[],txs:[],savings:[],inst:[],wallet:[],recur:[],inb
 const LKEY='sotthe_v1';
 const S=()=>({...DEF,...(D.settings||{})});
 function lsSave(){try{localStorage.setItem(LKEY,JSON.stringify(D))}catch(e){}}
-function lsLoad(){try{const o=JSON.parse(localStorage.getItem(LKEY)||'null');if(o)for(const k of [...COLS,'settings'])if(o[k])D[k]=o[k]}catch(e){}}
+function lsLoad(){try{const o=JSON.parse(localStorage.getItem(LKEY)||'null');if(o)for(const k of [...COLS,'settings'])if(o[k])D[k]=o[k];DV++}catch(e){}}
 let rq=0;function render(){if(rq)return;rq=requestAnimationFrame(()=>{rq=0;draw()})}
 function toast(m){const t=$('#ts');t.innerHTML='<div class="toast">'+esc(m)+'</div>';clearTimeout(toast.t);toast.t=setTimeout(()=>t.innerHTML='',2600)}
-function upsertLocal(col,o){if(col==='settings'){D.settings={...o};return}const a=D[col],i=a.findIndex(x=>x.id===o.id);if(i<0)a.push({...o});else a[i]={...o}}
+function upsertLocal(col,o){DV++;if(col==='settings'){D.settings={...o};return}const a=D[col],i=a.findIndex(x=>x.id===o.id);if(i<0)a.push({...o});else a[i]={...o}}
+let PUTQ=null; /* đang lấy mail: gom các lần lưu, gửi song song, vẽ lại 1 lần ở cuối */
 async function put(col,o){
   o.id=o.id||(col==='settings'?'main':uid());
-  upsertLocal(col,o);render();
+  upsertLocal(col,o);
+  if(PUTQ){if(db){const b={...o};delete b.id;PUTQ.push(db.collection(col).doc(o.id).set(b).catch(e=>{PUTQ.err=e}))}return o}
+  render();
   if(db){try{const b={...o};delete b.id;await db.collection(col).doc(o.id).set(b)}catch(e){toast('Không lưu được: '+(e.message||e.code||'lỗi'));render()}}
   else lsSave();
   return o;
 }
 async function del(col,id){
-  D[col]=D[col].filter(x=>x.id!==id);
+  DV++;D[col]=D[col].filter(x=>x.id!==id);
   if(db){try{await db.collection(col).doc(id).delete()}catch(e){toast('Không xóa được: '+(e.message||e.code||'lỗi'))}}else lsSave();
   render();
 }
@@ -449,7 +452,7 @@ async function initStore(){
   [...COLS,'settings'].forEach(col=>{
     db.collection(col).onSnapshot(snap=>{
       const arr=snap.docs.map(d=>({id:d.id,...d.data()}));
-      if(col==='settings'){D.settings=arr.find(x=>x.id==='main')||{}}else D[col]=arr;
+      if(col==='settings'){D.settings=arr.find(x=>x.id==='main')||{}}else D[col]=arr;DV++;
       D.loaded=(D.loaded||0)+1;render();
     },e=>{D.loaded=(D.loaded||0)+1;toast('Lỗi đồng bộ: '+(e.message||e.code||''));render()});
   });
@@ -776,9 +779,9 @@ function pgGiaoDich(){
     <div class="card"><h3>Top MCC chi tiêu</h3>${top.length?top.map(([k,v],i)=>`<div class="mrow"><span class="row" style="flex-wrap:nowrap;gap:12px"><span class="rk">${i+1}</span><span>${esc(k)}</span></span><b>${money(v)}</b></div>`).join(''):'<p class="mut">Chưa có chi tiêu.</p>'}</div></div>`;
   }
   if(!L.length)return h+empty('Không có giao dịch','Thử đổi bộ lọc hoặc thêm giao dịch mới.',btn('Thêm giao dịch','tx-new',null,'p','plus'));
-  if(sp)return h+`<div class="card tw"><table class="txt"><thead><tr><th>Ngày</th><th>Thẻ / chủ thẻ</th>${tab==='all'?'<th>Loại</th>':''}<th>MCC</th><th>Nội dung</th><th class="n">Số tiền</th><th class="n">Phí</th><th class="n">Back</th><th class="n" title="Lợi nhuận = Hoàn − Phí">Lợi nhuận</th><th>Back</th><th></th></tr></thead><tbody>${L.slice(0,300).map(t=>tab==='all'?(t.kind==='spend'?txRow(t,true):allRow(t)):txRow(t)).join('')}</tbody></table>${L.length>300?`<p class="hint">Hiển thị 300/${L.length} giao dịch mới nhất — thu hẹp bộ lọc để xem thêm.</p>`:''}</div>`;
+  if(sp)return h+`<div class="card tw"><table class="txt"><thead><tr><th>Ngày</th><th>Thẻ / chủ thẻ</th>${tab==='all'?'<th>Loại</th>':''}<th>MCC</th><th>Nội dung</th><th class="n">Số tiền</th><th class="n">Phí</th><th class="n">Back</th><th class="n" title="Lợi nhuận = Hoàn − Phí">Lợi nhuận</th><th>Back</th><th></th></tr></thead><tbody>${L.slice(0,UI.txLim||100).map(t=>tab==='all'?(t.kind==='spend'?txRow(t,true):allRow(t)):txRow(t)).join('')}</tbody></table>${L.length>(UI.txLim||100)?`<div class="row" style="justify-content:center;gap:8px;margin:10px 0"><span class="hint">Đang hiện ${UI.txLim||100}/${L.length} giao dịch mới nhất</span>${btn('Xem thêm 100','tx-more',null,'s')}</div>`:''}</div>`;
   const KL={payment:['Thanh toán','g'],cashback:['Hoàn tiền','a'],points:['Tích điểm','w']};
-  return h+`<div class="card tw"><table><thead><tr><th>Ngày</th><th>Thẻ / chủ thẻ</th><th>Loại</th><th class="n">Số tiền / điểm</th><th>Ghi chú</th><th></th></tr></thead><tbody>${L.slice(0,300).map(t=>{const c=D.cards.find(x=>x.id===t.cardId);return `${emTr(t)}<td>${dtShow(t.ts)}${emK(t)}</td><td>${c?cname(c)+`<div class="hint">${esc(c.owner||'')}</div>`:`<select class="asg" data-asg="${t.id}" aria-label="Gán thẻ"><option value="">⚠ Chọn thẻ…</option>${cardOpts('')}</select>`}</td><td>${chip(KL[t.kind][0],KL[t.kind][1])}</td><td class="n"><b>${fmt(t.amount)}</b></td><td>${esc(t.note||'')}</td><td><div class="row" style="flex-wrap:nowrap">${btn('','tx-edit',t.id,'ic1','edit')}${btn('','tx-del',t.id,'ic1 d','trash')}</div></td></tr>`}).join('')}</tbody></table></div>`;
+  return h+`<div class="card tw"><table><thead><tr><th>Ngày</th><th>Thẻ / chủ thẻ</th><th>Loại</th><th class="n">Số tiền / điểm</th><th>Ghi chú</th><th></th></tr></thead><tbody>${L.slice(0,UI.txLim||100).map(t=>{const c=D.cards.find(x=>x.id===t.cardId);return `${emTr(t)}<td>${dtShow(t.ts)}${emK(t)}</td><td>${c?cname(c)+`<div class="hint">${esc(c.owner||'')}</div>`:`<select class="asg" data-asg="${t.id}" aria-label="Gán thẻ"><option value="">⚠ Chọn thẻ…</option>${cardOpts('')}</select>`}</td><td>${chip(KL[t.kind][0],KL[t.kind][1])}</td><td class="n"><b>${fmt(t.amount)}</b></td><td>${esc(t.note||'')}</td><td><div class="row" style="flex-wrap:nowrap">${btn('','tx-edit',t.id,'ic1','edit')}${btn('','tx-del',t.id,'ic1 d','trash')}</div></td></tr>`}).join('')}</tbody></table></div>`;
 }
 
 /* ===== Quản lý MCC ===== */
@@ -1477,7 +1480,7 @@ const ACT={
   'pb-all':id=>{document.querySelectorAll('#pb .pbr').forEach(r=>{if(r.hidden)return;const c=r.querySelector('.pbc');if(id==='none')c.checked=false;else if(+r.dataset.st>0){c.checked=true;const m=r.querySelector('.pbm');m.value='st';r.querySelector('.pba').value=fmt(+r.dataset.st)}});pbUpd()},
   ktab:id=>{const f=$('#mf'),k=f&&f.kind;if(!k)return;k.value=id==='spend'?'spend':(k.value==='spend'?'payment':k.value);document.querySelectorAll('#kt button').forEach(b=>b.classList.toggle('on',b.dataset.id===id));k.dispatchEvent(new Event('change',{bubbles:true}))},'tx-edit':id=>txForm(byId('txs',id)),'tx-del':(id,b)=>two(b,()=>del('txs',id)),
   'tx-clone':id=>{const t={...byId('txs',id)};delete t.id;t.ts=nowLocal();t.backStatus='pending';t.backDate='';txForm(null,t)},
-  txtab:id=>{UI.txTab=id;render()},
+  txtab:id=>{UI.txTab=id;UI.txLim=100;render()},
   backdone:async id=>{await put('txs',{...byId('txs',id),backStatus:'done',backDate:ymd(new Date())});toast('Đã ghi nhận back vào ví')},
   backundo:async id=>{await put('txs',{...byId('txs',id),backStatus:'pending',backDate:''});toast('Đã chuyển về Chưa back')},
   dis:async id=>{const s=S();await put('settings',{...s,id:'main',dismissed:{...(s.dismissed||{}),[id]:1}})},
@@ -1523,8 +1526,10 @@ document.addEventListener('submit',async e=>{
 /* ===== Vẽ trang & điều hướng ===== */
 const PAGES={'tong-quan':pgTongQuan,the:pgThe,'giao-dich':pgGiaoDich,mcc:pgMcc,vi:pgVi,'tiet-kiem':pgTietKiem,'tra-gop':pgTraGop,'du-no':pgDuNo,'bao-cao':pgBaoCao,'thong-bao':pgThongBao,'dinh-ky':pgDinhKy,'huong-dan':pgHuongDan,'cai-dat':pgCaiDat};
 let ready=false;
+/* DV tăng mỗi khi dữ liệu đổi → chỉ tính lại khi cần, bấm chuyển tab/mở rộng không phải tính lại cả app */
+let DV=0,DVd='';
 function draw(){
-  derive();
+  {const k=DV+'|'+ymd(new Date());if(k!==DVd){derive();DVd=k}}
   const ae=document.activeElement,fk=ae&&ae.dataset&&ae.dataset.f,sp=fk?ae.selectionStart:0,bd=n=>n>0?`<span class="bd">${n}</span>`:'';
   $('#hdr').innerHTML=`<div class="hd-in"><div class="hd-top"><div class="brand"><i>${ico('card',18)}</i><div>MayBaoTheCRM<small>Quản lý thẻ tín dụng</small></div></div><div class="hd-r"><a class="hd-bell" href="#thong-bao" aria-label="Thông báo">${ico('bell',19)}${V.nAlert?`<b>${V.nAlert}</b>`:''}</a><span class="hd-user"><i>ML</i>Mr Lâm</span></div></div><nav class="hd-nav">${NAV.map(([id,ic,l])=>`<a class="${UI.page===id?'on':''}" href="#${id}">${l}${id==='thong-bao'?bd(V.nAlert):''}${id==='hang-cho'&&typeof hcN==='function'?bd(hcN()):''}</a>`).join('')}</nav></div>`;
   const B=[['tong-quan','home','Tổng quan'],['the','card','Thẻ'],['giao-dich','list','Giao dịch'],['hang-cho','pay','Hàng chờ'],['thong-bao','bell','Nhắc nhở']];
@@ -2239,7 +2244,10 @@ const hcRetry=x=>!(x.pv>=3)&&((x.status==='ignored'&&x.kind==='other'&&!x.src)||
 const hcN=()=>D.inbox.filter(x=>(x.status==='pending'&&HC_TX(x.kind))||hcRv(x)).length;
 const hcLocal=iso=>{const d=new Date(iso);return isNaN(d)?'':ymd(d)+'T'+pad(d.getHours())+':'+pad(d.getMinutes())};
 function hcOwnerMap(){const m={};String(S().ownerMap||'').split(/\n/).forEach(l=>{const i=l.indexOf('=');if(i>0)m[l.slice(0,i).trim().toLowerCase()]=l.slice(i+1).trim()});return m}
-function hcCard(it){
+/* nhớ kết quả dò thẻ theo từng mục, xoá khi dữ liệu đổi (DV) — trước đây 1 lần vẽ Hàng chờ gọi ~11.000 lần */
+let _hcC=new WeakMap(),_hcCV=-1;
+function hcCard(it){if(!it||typeof it!=='object')return hcCard0(it);if(_hcCV!==DV){_hcC=new WeakMap();_hcCV=DV}let r=_hcC.get(it);if(!r){r=hcCard0(it);_hcC.set(it,r)}return r}
+function hcCard0(it){
   if(it.cardSet)return{cardId:it.cardId||'',how:'đã chọn'};
   return ntfMatch(it,D.cards,it.owner);
 }
@@ -2332,6 +2340,7 @@ async function hcSync(auto){
   let since=addD(last,-2);D.inbox.filter(hcRetry).forEach(x=>{const d=new Date(x.recv||x.ts||'');if(!isNaN(d)&&d<since)since=addD(d,-1)});const lim=addD(new Date(),-90);if(since<lim)since=lim;
   const q=`label:"${lab.replace(/"/g,'')}" after:${since.getFullYear()}/${pad(since.getMonth()+1)}/${pad(since.getDate())}`;
   for(let k=0;k<20&&!D.inbox.length;k++)await new Promise(r=>setTimeout(r,250));
+  PUTQ=[];let lastDraw=0;const prog=m=>{UI.hcMsg=m;const t=Date.now();if(t-lastDraw>1500){lastDraw=t;render()}};
   await hcHeal();
   /* đã biết = có trong hàng chờ HOẶC đã ghi vào sổ — không bao giờ ghi đè mục đã duyệt/bỏ qua về “chờ duyệt” */
   /* thư bị bộ đọc cũ bỏ qua tự động (không đọc được nội dung) được đọc lại 1 lần bằng bộ đọc mới (pv=2: đọc được email dạng HTML) */
@@ -2340,22 +2349,25 @@ async function hcSync(auto){
   try{
     do{
       const p=await call('search_threads',{query:q,pageSize:50,view:'THREAD_VIEW_METADATA_ONLY',...(tok?{pageToken:tok}:{})});
-      for(const th of (p.threads||[])){
-        const ms=th.messages||[];
-        if(ms.length&&ms.length>=(th.messageCount||ms.length)&&ms.every(m=>known.has('g_'+m.id)))continue;
-        const t=await call('get_thread',{threadId:th.id,messageFormat:'PLAIN_TEXT'});
-        for(const m of (t.messages||[])){
+      const need=(p.threads||[]).filter(th=>{const ms=th.messages||[];return !(ms.length&&ms.length>=(th.messageCount||ms.length)&&ms.every(m=>known.has('g_'+m.id)))});
+      /* tải song song 5 thư một lúc (mỗi lần gọi cầu nối mất 1–2 giây) */
+      const got=new Array(need.length);let nx=0;
+      await Promise.all(Array.from({length:Math.min(5,need.length)},async()=>{while(nx<need.length){const i=nx++;got[i]=await call('get_thread',{threadId:need[i].id,messageFormat:'PLAIN_TEXT'})}}));
+      for(const t of got){
+        for(const m of ((t&&t.messages)||[])){
           if(known.has('g_'+m.id))continue;known.add('g_'+m.id);
           const r0=hcFromMail(m);if(!r0){await put('inbox',{id:'g_'+m.id,status:'ignored',kind:'other',pv:3,recv:m.date||'',owner:((String(m.subject||'').match(/\[MBT-MAIL\]\s*(.*)$/i)||[])[1]||'').trim()});continue}
           for(const it of [].concat(r0).map(hcFix)){if(it.id!=='g_'+m.id&&known.has(it.id))continue;known.add(it.id);{const ex=D.inbox.find(x=>x.id===it.id);if(ex&&ex.status!=='pending'&&!hcRetry(ex))continue}it.pv=3;{const dp=hcSame(it);if(dp){if(it.src!=='android'&&dp.src==='android'&&dp.status==='pending'){dp.status='skip';dp.dupOf=it.id;dp.note=((dp.note||'')+' · Đã có email cùng giao dịch (dùng số trên email)').replace(/^ · /,'');await put('inbox',dp)}else{it.status='skip';it.dupOf=dp.id;it.note=((it.note||'')+(it.src==='android'&&dp.src!=='android'?' · Trùng email cùng giao dịch':' · Trùng thư khác cùng giao dịch')).replace(/^ · /,'')}}}await put('inbox',it);nNew++;if(it.status==='pending')nTx++}
-          UI.hcMsg='Đã đọc '+nNew+' email…';render();
+          prog('Đã đọc '+nNew+' email…');
         }
       }
       tok=p.nextPageToken||'';pages++;
     }while(tok&&pages<8);
+    {const Q=PUTQ;PUTQ=null;prog('Đang lưu…');await Promise.all(Q);if(!db)lsSave();if(Q.err)throw Q.err}
     await put('settings',{...S(),id:'main',gmLast:new Date().toISOString()});
     UI.hcMsg='';if(nNew||!auto)toast(nNew?`Đã lấy ${nNew} email · ${nTx} giao dịch chờ duyệt`:'Không có email mới');
   }catch(e){
+    if(PUTQ){const Q=PUTQ;PUTQ=null;try{await Promise.all(Q)}catch(_){}if(!db)lsSave()}
     const c=e&&e.code;UI.hcMsg='';
     if(!auto||!/not_granted|capability_disabled|approval_required|not_in_manifest/.test(c||''))toast(HC_ERR[c]||(c==='server_unavailable'||c==='upstream_error'?'Gmail đang không phản hồi, thử lại sau ít phút.':'Không đọc được Gmail'+(e&&e.message?': '+e.message:'')));
   }
@@ -2447,7 +2459,7 @@ function pgHangCho(){
   if(RV.length)warn+=`<details class="tbm wn"><summary style="cursor:pointer">⚠ <b>${RV.length} thư ngân hàng app chưa đọc được số tiền</b> <span class="hint">(bấm để xem)</span> ${btn('Ẩn hết — không phải GD','hc-rvall',null,'s')}</summary>Thư nào là giao dịch thì bấm “Đưa vào hàng chờ”.${RV.slice(0,20).map(it=>`<div class="row" style="justify-content:space-between;gap:8px;margin-top:6px"><span>${esc((it.bank||it.from||'')+' · '+(it.subject||'').slice(0,70))} · ${it.ts?dtShow(it.ts):''}</span><span class="row">${btn('Đưa vào hàng chờ','hc-req',it.id,'s')}${btn('Không phải GD','hc-rvok',it.id,'s')}</span></div>`).join('')}</details>`;
   if(NC.length)warn+=`<div class="tbm wn">⚠ <b>${NC.length} giao dịch chưa khớp thẻ nào trong app</b> (thẻ ${[...new Set(NC.map(x=>(x.bank||'')+' '+(x.last4||'?')))].join(', ')}). Thêm thẻ vào app hoặc chọn thẻ khi duyệt — chưa chọn thẻ thì không ghi được.</div>`;
   let body=warn;
-  if(tab==='pending')body+=P.length?`${ready>1?`<div class="row" style="justify-content:flex-end">${btn('Ghi tất cả '+ready+' giao dịch đủ thông tin, không trùng','hc-okall',null,'p','check')}</div>`:''}<div class="row" style="justify-content:flex-end;margin-top:6px">${btn('Bỏ qua tất cả '+P.length+' GD đang hiển thị','hc-skipall',null,'s d','x')}</div>${srt(P).map(hcItem).join('')}`:empty('Không có giao dịch chờ duyệt','Bấm “Lấy giao dịch mới” để đọc email từ Gmail.',btn('Lấy giao dịch mới','hc-sync',null,'p','repeat'));
+  if(tab==='pending')body+=P.length?`${ready>1?`<div class="row" style="justify-content:flex-end">${btn('Ghi tất cả '+ready+' giao dịch đủ thông tin, không trùng','hc-okall',null,'p','check')}</div>`:''}<div class="row" style="justify-content:flex-end;margin-top:6px">${btn('Bỏ qua tất cả '+P.length+' GD đang hiển thị','hc-skipall',null,'s d','x')}</div>${srt(P).slice(0,UI.hcLim||20).map(hcItem).join('')}${P.length>(UI.hcLim||20)?`<div class="row" style="justify-content:center;margin:12px 0">${btn('Xem thêm '+Math.min(20,P.length-(UI.hcLim||20))+' giao dịch (còn '+(P.length-(UI.hcLim||20))+')','hc-more',null,'s')}</div>`:''}`:empty('Không có giao dịch chờ duyệt','Bấm “Lấy giao dịch mới” để đọc email từ Gmail.',btn('Lấy giao dịch mới','hc-sync',null,'p','repeat'));
   else if(tab==='info')body+=I.length?srt(I).map(hcInfo).join(''):empty('Trống','Thông báo sao kê, biến động tài khoản thanh toán và email không đọc được sẽ nằm ở đây.');
   else{const L=srt(tab==='done'?Dn:Sk).slice(0,200);body+=L.length?`<div class="card tw"><table><thead><tr><th>Thời gian</th><th>Thẻ</th><th class="n">Số tiền</th><th>Nội dung</th><th></th></tr></thead><tbody>${L.map(it=>{const c=D.cards.find(x=>x.id===it.cardId);return `<tr><td>${it.ts?dtShow(it.ts):''}</td><td>${c?cname(c):'—'}</td><td class="n">${fmt(it.amount)}</td><td class="dsc">${esc(it.merchant||String(it.raw||'').slice(0,60))}</td><td>${tab==='skip'?btn('Khôi phục','hc-req',it.id,'s'):chip('Đã ghi','g')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Trống','');}
   return hd('Hàng chờ giao dịch','Giao dịch tự lấy từ thông báo ngân hàng qua Gmail — anh duyệt rồi mới ghi vào sổ',btn('Cài đặt','hc-cfg',null,'','gear')+btn('Dán thông báo','hc-paste',null,'','plus')+btn(HC_BUSY?'Đang đọc…':'Lấy giao dịch mới','hc-sync',null,'p','repeat'))+
@@ -2472,8 +2484,10 @@ document.addEventListener('change',async e=>{
   upsertLocal('inbox',n);if(db){try{const b={...n};delete b.id;await db.collection('inbox').doc(n.id).set(b)}catch(x){toast('Không lưu được: '+(x.message||x.code||'lỗi'))}}else lsSave();
 });
 Object.assign(ACT,{
+  'tx-more':()=>{UI.txLim=(UI.txLim||100)+100;render()},
   'hc-sync':()=>hcSync(),'hc-paste':()=>hcPaste(),'hc-cfg':()=>hcCfg(),
-  'hc-tab':id=>{UI.hcTab=id;render()},
+  'hc-tab':id=>{UI.hcTab=id;UI.hcLim=20;render()},
+  'hc-more':()=>{UI.hcLim=(UI.hcLim||20)+20;render()},
   'hc-ok':async id=>{if(await hcApprove(id))toast('Đã ghi vào sổ giao dịch')},
   'hc-okall':async()=>{let n=0;for(const it of D.inbox.filter(x=>x.status==='pending')){const c=hcCard(it).cardId;if(c&&hcDup(it,c))continue;if(hcVoid(it))continue;if(await hcApprove(it.id,true))n++}toast('Đã ghi '+n+' giao dịch (bỏ qua giao dịch nghi trùng)')},
   'hc-skip':async id=>{const it=D.inbox.find(x=>x.id===id);if(it)await put('inbox',{...it,status:'skip'})},
