@@ -2108,9 +2108,11 @@ function bankParse(subj,body,meta={}){
       r.appr=F(/Số (?:hóa đơn|giao dịch)\s*:?\s*(\d{6,})/);if(!r.last4)r.last4=F(/Số thẻ\s*:?\s*[^\d]{0,40}?x{2,}\s*(\d{4})/);
       if(!r.holder)r.holder=F(/Số thẻ\s*:?\s*([A-Z][A-Z ]+?)\s*-/);r.txType='Thanh toán dư nợ thẻ';return r}
     if(/doi qua tien mat|hoan tien/.test(sN)){
-      r.kind='refund';r.amount=A(/Số tiền đổi được\s*:\s*([\d.,]+)/)||A(/Số tiền\s*:\s*([\d.,]+)/);r.ts=T(F(/Ngày giao dịch\s*:\s*(\d[\d\/]*)/))||r.ts;
+      /* thư MyVIB dạng bảng (không có dấu “:”): “Số tiền đổi được 500,000 VND … Trạng thái giao dịch Thành công” */
+      r.kind='refund';r.amount=A(/Số tiền (?:đổi được|quy đổi)\s*:?\s*([\d.,]+)/)||A(/Số tiền\s*:?\s*([\d.,]+)\s*(?:VND|₫)/);r.ts=T(F(/Ngày giao dịch\s*:?\s*(\d[\d\/]*)/))||r.ts;
+      r.appr=F(/Số ho[áà] đơn\s*:?\s*(\d{6,})/);if(!r.holder)r.holder=F(/Tên chủ thẻ\s*:?\s*([A-Z][A-Z ]+?)\s+Số/);
       r.merchant='Đổi điểm hoàn tiền VIB';r.txType='Đổi quà tiền mặt';
-      if(/trạng thái giao dịch\s*:\s*thành công/i.test(t)||!/trạng thái/i.test(t))return r;r.kind='other';return r}
+      if(/trạng thái giao dịch\s*:?\s*thành công/i.test(t)||!/trạng thái/i.test(t))return r;r.kind='other';r.note='Đổi quà tiền mặt không thành công';return r}
     return bkSkip(sN)?{skip:true}:r;
   }
   /* ---- SHB ---- */
