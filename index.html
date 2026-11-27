@@ -2503,6 +2503,34 @@ function sacomParse(raw,t){
       note:'Sao kê Sacombank'+(cards.length>1?' chung '+cards.length+' thẻ …'+cards.join(', …'):'')+': tổng dư nợ cuối kỳ '+fmt(amount)+' ₫'+(minDue?' · tối thiểu '+fmt(minDue)+' ₫':'')+(dueDate?' · hạn '+dueDate.split('-').reverse().join('/'):''),sure:true,why:''}}
   return null;
 }
+/* BIDV SmartBanking: màn “Giao dịch thành công” ngay sau khi làm lệnh trong app.
+   - Thanh toán thẻ (trả nợ thẻ): có Tài khoản nguồn + Số thẻ + Tên chủ thẻ, KHÔNG có “Thanh toán cho” / “Tên điểm bán”
+   - Chi tiêu bằng thẻ trong app: có Số thẻ + Thanh toán cho + Tên điểm bán */
+function bidvRcptParse(raw,t){
+  const one=t.replace(/\s+/g,' ');
+  if(!/giao dich thanh cong/i.test(one)||!/so tham chieu|tham chieu|luu anh|giao dich moi/i.test(one))return null;
+  const cm=one.match(/(\d{4,8})\s*[*xX•]{2,}\s*(\d{4})(?!\d)/);
+  if(!cm)return null;
+  const p2=x=>String(x).padStart(2,'0');
+  const dm=one.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})\s*(\d{1,2}):(\d{2})(?::\d{2})?/)||one.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})()()/);
+  const ts=dm?`${dm[3]}-${p2(dm[2])}-${p2(dm[1])}`+(dm[4]?`T${p2(dm[4])}:${dm[5]}`:''):'';
+  /* số tiền: số có dấu phân cách hàng nghìn đứng trước VND (không lấy nhầm số tài khoản nguồn) */
+  const head=one.split(/so the|tai khoan nguon|khoan nguon/i)[0];
+  const am=head.match(/(\d{1,3}(?:[.,]\s?\d{3})+)\s*V\s*N\s*D/i)||one.match(/(\d{1,3}(?:[.,]\s?\d{3})+)\s*V\s*N\s*D/i)||head.match(/(\d{1,3}(?:[.,]\d{3})+)/);
+  const amount=am?ntfAmt(am[1].replace(/\s/g,'')):0;
+  const STOP=/\s*(?:ten\s*diem\s*ban|thanh\s*toan\s*cho|phi\s*giao\s*dich|so\s*tham\s*chieu|ten\s*chu\s*the|so\s*the|tai\s*khoan\s*nguon|noi\s*dung|chia\s*se|luu\s*anh)\b.*$/i;
+  const lineAfter=lab=>{const m=t.match(new RegExp(lab+'\\s*:?[ \\t]*([^\\n]*)','i'));return m?m[1].replace(STOP,'').trim():''};
+  const payTo=lineAfter('thanh\\s*toan\\s*cho'),shop=lineAfter('ten\\s*diem\\s*ban');
+  const holder=(lineAfter('ten\\s*chu\\s*the').match(/[A-Z]{2,}(?: [A-Z]{2,})*/)||[''])[0];
+  const ref=(one.match(/so tham chieu:? ?([A-Za-z0-9]{4,}-?[A-Za-z0-9]*)/i)||[])[1]||'';
+  const isPay=!payTo&&!shop&&/khoan nguon|ten chu the/i.test(one);
+  const merchant=isPay?'':(payTo||shop).slice(0,80);
+  const why=[];
+  if(!amount)why.push('không đọc được số tiền');else if(amount<1000)why.push('số tiền bất thường');
+  if(!ts)why.push('không đọc được ngày');
+  if(!isPay&&!merchant)why.push('không rõ loại giao dịch');
+  return{bank:'BIDV',kind:isPay?'payment':'spend',sign:isPay?1:-1,amount,last4:cm[2],first:cm[1],cardName:'',merchant,content:isPay?'Thanh toán thẻ'+(holder?' · '+holder:''):[payTo,shop].filter(Boolean).join(' · '),holder,ts,appr:ref,cur:'VND',raw:raw.slice(0,1500),sure:!why.length,why:why.join(', ')};
+}
 /* Đọc chữ của bill → giao dịch. BIDV SmartBanking (màn “Chi tiết giao dịch” thẻ tín dụng) đọc chắc chắn; ngân hàng khác dùng bộ đọc thông báo chung */
 function billParse(txt){
   const raw=String(txt||'').normalize('NFC').replace(/\r/g,'').replace(/[ \t]+/g,' ').trim();
@@ -2513,6 +2541,7 @@ function billParse(txt){
   const AMT=/([+-]?)\s*(\d{1,3}(?:[.,]\s?\d{3})+|\d{4,})(?:[.,]\d{1,2}(?!\d))?\s*(VND|USD|EUR|JPY|SGD|THB|KRW|CNY|GBP|AUD|HKD|TWD)?/;
   const am=s=>{s=String(s).replace(/(\d)[OoD]/g,'$10').replace(/(\d)[OoD]/g,'$10').replace(/[Oo](\d)/g,'0$1');const m=s.match(AMT);return m?{sign:m[1]==='-'?-1:m[1]==='+'?1:0,v:ntfAmt(m[2].replace(/\s/g,'')),cur:m[3]||'VND'}:null};
   {const sc=sacomParse(raw,t);if(sc)return sc}
+  {const br=bidvRcptParse(raw,t);if(br)return br}
   const isBidv=/so\s*chuan\s*chi|ngay\s*quyet\s*toan|quy\s*doi\s*noi\s*te/i.test(t);
   if(!isBidv){
     const p=ntfParse(raw,{date:''});
@@ -2553,7 +2582,9 @@ async function billAdd(p,o,batch){
   const id='b_'+[p.bank||'x',p.last4||'x',day||'x',p.kind,+p.amount||0].join('_').replace(/[^A-Za-z0-9_-]/g,'');
   const ex=D.inbox.find(x=>x.id===id);
   if(ex)return{id,st:'dup',p,msg:'Bill này đã đọc trước đây'};
-  const it={id,src:'bill',owner:(o.owner||'').trim(),recv:new Date().toISOString(),subject:'',from:'',...p,status:HC_TX(p.kind)?'pending':'info'};
+  /* bản đọc cũ của cùng bill nhưng nhận sai loại (VD thanh toán thẻ bị hiểu là chi tiêu) → bỏ bản cũ nếu chưa ghi sổ */
+  for(const x of D.inbox)if(x.src==='bill'&&x.status==='pending'&&x.kind!==p.kind&&x.bank===p.bank&&x.last4===p.last4&&+x.amount===+p.amount&&String(x.ts||'').slice(0,10)===day)await put('inbox',{...x,status:'skip',note:'Đọc lại: đúng loại là '+({payment:'thanh toán thẻ',spend:'chi tiêu',refund:'hoàn tiền'}[p.kind]||p.kind)});
+  const it={id,src:'bill',owner:(o.owner||'').trim()||p.holder||'',recv:new Date().toISOString(),subject:'',from:'',...p,status:HC_TX(p.kind)?'pending':'info'};
   delete it.sure;delete it.why;delete it.generic;
   if(p.kind==='stmt'&&+p.amount>0){it.status='info';await put('inbox',it);return{id,st:'info',p,msg:'Đã lưu vào tab “Sao kê & khác” — '+(p.note||'')}}
   /* mẫu chưa hỗ trợ: chỉ đưa vào hàng chờ khi đọc được cả số tiền và (số thẻ hoặc ngày) — tránh tạo GD rác từ ảnh không phải bill */
@@ -2621,7 +2652,7 @@ Object.assign(ACT,{
 });
 function billScan(){
   billQClear();BILL_R=[];
-  openModal('Thêm giao dịch từ ảnh chụp bill',`<p class="hint" style="margin:0 0 10px">Chọn ảnh chụp màn hình “Chi tiết giao dịch” trong app ngân hàng (thêm được nhiều ảnh, đọc 1 lượt). App đọc chữ ngay trên máy — ảnh không gửi đi đâu. Đọc chắc chắn: <b>BIDV SmartBanking</b> (Chi tiết giao dịch) và <b>Sacombank Pay</b> (Thông báo giao dịch, tiền vào thẻ, nhắc sao kê).</p>
+  openModal('Thêm giao dịch từ ảnh chụp bill',`<p class="hint" style="margin:0 0 10px">Chọn ảnh chụp màn hình “Chi tiết giao dịch” trong app ngân hàng (thêm được nhiều ảnh, đọc 1 lượt). App đọc chữ ngay trên máy — ảnh không gửi đi đâu. Đọc chắc chắn: <b>BIDV SmartBanking</b> (Chi tiết giao dịch, màn Giao dịch thành công — chi tiêu hoặc thanh toán thẻ) và <b>Sacombank Pay</b> (Thông báo giao dịch, tiền vào thẻ, nhắc sao kê).</p>
   <div class="fg"><div class="f w2"><label>Ảnh bill — bấm “Thêm ảnh” bao nhiêu lần cũng được, mỗi lần chọn được nhiều ảnh, rồi đọc 1 lượt</label><label class="btn" style="justify-content:center;cursor:pointer;position:relative">${ico('plus',15)}Thêm ảnh<input type="file" id="bsFile" accept="image/*" multiple style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer"></label><div id="bsList"></div></div>
   ${fld('Chủ thẻ (không bắt buộc — dùng khi nhiều thẻ trùng 4 số cuối)',ownerBox('name="owner"',''),'w2')}
   <label class="w2" style="display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:4px;cursor:pointer"><input type="checkbox" name="auto" id="bsAuto"${billAutoOn()?' checked':''} style="width:18px;height:18px;flex:none;margin-top:1px"><span>Tự ghi vào sổ khi đọc chắc chắn (đủ số tiền, số thẻ, ngày, khớp thẻ, không trùng). Bỏ chọn: app chỉ bóc tách, anh xem đúng rồi bấm <b>Ghi vào sổ</b> từng GD hoặc <b>Ghi tất cả</b>.</span></label></div>
