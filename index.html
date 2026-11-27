@@ -2532,6 +2532,8 @@ async function billAdd(p,o,batch){
   if(ex)return{st:'dup',p,msg:'Bill này đã đọc trước đây'};
   const it={id,src:'bill',owner:(o.owner||'').trim(),recv:new Date().toISOString(),subject:'',from:'',...p,status:HC_TX(p.kind)?'pending':'info'};
   delete it.sure;delete it.why;
+  /* mẫu chưa hỗ trợ: chỉ đưa vào hàng chờ khi đọc được cả số tiền và (số thẻ hoặc ngày) — tránh tạo GD rác từ ảnh không phải bill */
+  if(p.bank!=='BIDV'&&!(+p.amount>0&&(p.last4||String(p.ts||'').length>=10)))return{st:'bad',p,msg:'Không nhận ra bill giao dịch trong ảnh — mẫu ngân hàng này chưa được hỗ trợ. Gửi ảnh mẫu để thêm.'};
   if(!HC_TX(p.kind)||!(+p.amount>0)){it.status='info';it.review=true;it.note='Ảnh chụp chưa đọc được giao dịch'+(p.why?' · '+p.why:'');await put('inbox',it);return{st:'bad',p,msg:it.note}}
   if(p.why)it.note='Đọc từ ảnh: '+p.why;
   /* trùng giao dịch đã có từ email / thông báo app (cùng thẻ, số tiền, ngày, loại) */
