@@ -2408,8 +2408,23 @@ async function hcSync(auto){
   }
   HC_BUSY=false;render();
 }
+/* Lần ghi gần nhất (để hoàn tác): cùng mã lô, hoặc (thư ghi trước khi có mã lô) các GD ghi liền nhau cách nhau < 15 giây */
+function hcLastBatch(){
+  const L=D.inbox.filter(x=>x.status==='done'&&x.txId&&x.doneAt).sort((a,b)=>String(b.doneAt).localeCompare(String(a.doneAt)));
+  if(!L.length)return [];
+  if(L[0].okBatch)return L.filter(x=>x.okBatch===L[0].okBatch);
+  const R=[L[0]];for(let i=1;i<L.length;i++){if(L[i].okBatch||new Date(L[i-1].doneAt)-new Date(L[i].doneAt)>15000)break;R.push(L[i])}
+  return R;
+}
+async function hcUndo(L){
+  let n=0;
+  for(const it of L){const t=D.txs.find(x=>x.id===it.txId);if(t&&t.src===it.id){await del('txs',t.id);n++}
+    const o={...it,status:'pending'};delete o.txId;delete o.doneAt;delete o.okBatch;
+    await put('inbox',o)}
+  render();return n;
+}
 /* Ghi vào sổ giao dịch */
-async function hcApprove(id,silent){
+async function hcApprove(id,silent,batch){
   const it=D.inbox.find(x=>x.id===id);if(!it||it.status!=='pending')return false;
   const cid=hcCard(it).cardId,amt=+it.amount||0,mcc=hcMcc(it,cid);
   if(!cid||!amt){if(!silent)toast(!cid?'Chọn thẻ cho giao dịch này':'Nhập số tiền');return false}
@@ -2421,7 +2436,7 @@ async function hcApprove(id,silent){
   /* ghi song song (không chờ từng lệnh) — giao diện cập nhật ngay */
   tx.id=uid();const ps=[put('txs',tx)];
   if(it.kind==='spend'&&mcc&&it.merchant){const k=hcKey(it.merchant);if(k)ps.push(put('merch',{id:'m_'+k.replace(/ /g,'_'),name:it.merchant,mcc,bank:c?c.bank:''}))}
-  ps.push(put('inbox',{...it,cardId:cid,cardSet:true,mcc,status:'done',txId:tx.id,doneAt:new Date().toISOString()}));
+  ps.push(put('inbox',{...it,cardId:cid,cardSet:true,mcc,status:'done',txId:tx.id,doneAt:new Date().toISOString(),okBatch:batch||''}));
   await Promise.all(ps);
   return true;
 }
@@ -2496,7 +2511,7 @@ function pgHangCho(){
   let body=warn;
   if(tab==='pending')body+=P.length?`${ready>1?`<div class="row" style="justify-content:flex-end">${btn('Ghi tất cả '+ready+' giao dịch đủ thông tin, không trùng','hc-okall',null,'p','check')}</div>`:''}<div class="row" style="justify-content:flex-end;margin-top:6px">${btn('Bỏ qua tất cả '+P.length+' GD đang hiển thị','hc-skipall',null,'s d','x')}</div>${srt(P).slice(0,UI.hcLim||20).map(hcItem).join('')}${P.length>(UI.hcLim||20)?`<div class="row" style="justify-content:center;margin:12px 0">${btn('Xem thêm '+Math.min(20,P.length-(UI.hcLim||20))+' giao dịch (còn '+(P.length-(UI.hcLim||20))+')','hc-more',null,'s')}</div>`:''}`:empty('Không có giao dịch chờ duyệt','Bấm “Lấy giao dịch mới” để đọc email từ Gmail.',btn('Lấy giao dịch mới','hc-sync',null,'p','repeat'));
   else if(tab==='info')body+=I.length?srt(I).map(hcInfo).join(''):empty('Trống','Thông báo sao kê, biến động tài khoản thanh toán và email không đọc được sẽ nằm ở đây.');
-  else{const L=srt(tab==='done'?Dn:Sk).slice(0,200);body+=L.length?`<div class="card tw"><table><thead><tr><th>Thời gian</th><th>Thẻ</th><th class="n">Số tiền</th><th>Nội dung</th><th></th></tr></thead><tbody>${L.map(it=>{const c=D.cards.find(x=>x.id===it.cardId);return `<tr><td>${it.ts?dtShow(it.ts):''}</td><td>${c?cname(c):'—'}</td><td class="n">${fmt(it.amount)}</td><td class="dsc">${esc(it.merchant||String(it.raw||'').slice(0,60))}</td><td>${tab==='skip'?btn('Khôi phục','hc-req',it.id,'s'):chip('Đã ghi','g')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Trống','');}
+  else{const L=srt(tab==='done'?Dn:Sk).slice(0,200);if(tab==='done'){const LB=hcLastBatch();if(LB.length>1){const t0=new Date(LB[0].doneAt);body+=`<div class="row" style="justify-content:flex-end;margin-bottom:8px">${btn('Hoàn tác lần ghi gần nhất: '+LB.length+' GD lúc '+String(t0.getHours()).padStart(2,'0')+':'+String(t0.getMinutes()).padStart(2,'0')+' '+t0.getDate()+'/'+(t0.getMonth()+1),'hc-undo',null,'s d','x')}</div>`}}body+=L.length?`<div class="card tw"><table><thead><tr><th>Thời gian</th><th>Thẻ</th><th class="n">Số tiền</th><th>Nội dung</th><th></th></tr></thead><tbody>${L.map(it=>{const c=D.cards.find(x=>x.id===it.cardId);return `<tr><td>${it.ts?dtShow(it.ts):''}</td><td>${c?cname(c):'—'}</td><td class="n">${fmt(it.amount)}</td><td class="dsc">${esc(it.merchant||String(it.raw||'').slice(0,60))}</td><td>${tab==='skip'?btn('Khôi phục','hc-req',it.id,'s'):chip('Đã ghi','g')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Trống','');}
   return hd('Hàng chờ giao dịch','Giao dịch tự lấy từ thông báo ngân hàng qua Gmail — anh duyệt rồi mới ghi vào sổ',btn('Cài đặt','hc-cfg',null,'','gear')+btn('Dán thông báo','hc-paste',null,'','plus')+btn(HC_BUSY?'Đang đọc…':'Lấy giao dịch mới','hc-sync',null,'p','repeat'))+
   `<p class="hint" style="margin:-6px 0 0">${UI.hcMsg?'<b>'+esc(UI.hcMsg)+'</b> · ':''}Lần lấy gần nhất: ${last} · nhãn Gmail “${esc(S().gmLabel||'MayBaoThe')}”</p>`+
   fBar+`<div class="tabs" role="tablist">${T.map(t=>`<button class="${tab===t[0]?'on':''}" data-a="hc-tab" data-id="${t[0]}">${t[1]} <span class="mut">${t[2]}</span></button>`).join('')}</div>`+body+hcGuide();
@@ -2524,8 +2539,9 @@ Object.assign(ACT,{
   'hc-tab':id=>{UI.hcTab=id;UI.hcLim=20;render()},
   'hc-more':()=>{UI.hcLim=(UI.hcLim||20)+20;render()},
   'hc-ok':async id=>{if(await hcApprove(id))toast('Đã ghi vào sổ giao dịch')},
-  'hc-okall':async()=>{let n=0;for(const it of D.inbox.filter(x=>x.status==='pending')){const c=hcCard(it).cardId;if(c&&hcDup(it,c))continue;if(hcVoid(it))continue;if(await hcApprove(it.id,true))n++}toast('Đã ghi '+n+' giao dịch (bỏ qua giao dịch nghi trùng)')},
+  'hc-okall':async()=>{let n=0;const bt='b'+Date.now();for(const it of D.inbox.filter(x=>x.status==='pending')){const c=hcCard(it).cardId;if(c&&hcDup(it,c))continue;if(hcVoid(it))continue;if(await hcApprove(it.id,true,bt))n++}toast('Đã ghi '+n+' giao dịch (bỏ qua giao dịch nghi trùng)')},
   'hc-skip':async id=>{const it=D.inbox.find(x=>x.id===id);if(it)await put('inbox',{...it,status:'skip'})},
+  'hc-undo':(id,b)=>{const L=hcLastBatch();if(L.length<2)return;two(b,async()=>{const n=await hcUndo(L);toast('Đã xoá '+n+' giao dịch khỏi sổ, '+L.length+' thông báo quay lại tab Chờ duyệt')})},
   'hc-skipall':(id,b)=>{const L=(UI._hcP||[]).slice();if(!L.length)return;two(b,async()=>{for(const it of L)await put('inbox',{...it,status:'skip'});toast('Đã chuyển '+L.length+' GD sang tab “Đã bỏ qua” (khôi phục được)')})},
   'hc-rvall':(id,b)=>{const L=D.inbox.filter(hcRv);two(b,async()=>{for(const it of L)await put('inbox',{...it,reviewed:true});toast('Đã ẩn '+L.length+' thư')})},
   'hc-fclr':()=>{UI.hcF={from:'',to:'',bank:'',user:''};render()},
