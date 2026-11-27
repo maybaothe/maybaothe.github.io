@@ -2550,26 +2550,26 @@ async function billAdd(p,o,batch){
   const day=String(p.ts||'').slice(0,10);
   const id='b_'+[p.bank||'x',p.last4||'x',day||'x',p.kind,+p.amount||0].join('_').replace(/[^A-Za-z0-9_-]/g,'');
   const ex=D.inbox.find(x=>x.id===id);
-  if(ex)return{st:'dup',p,msg:'Bill này đã đọc trước đây'};
+  if(ex)return{id,st:'dup',p,msg:'Bill này đã đọc trước đây'};
   const it={id,src:'bill',owner:(o.owner||'').trim(),recv:new Date().toISOString(),subject:'',from:'',...p,status:HC_TX(p.kind)?'pending':'info'};
   delete it.sure;delete it.why;delete it.generic;
-  if(p.kind==='stmt'&&+p.amount>0){it.status='info';await put('inbox',it);return{st:'info',p,msg:'Đã lưu vào tab “Sao kê & khác” — '+(p.note||'')}}
+  if(p.kind==='stmt'&&+p.amount>0){it.status='info';await put('inbox',it);return{id,st:'info',p,msg:'Đã lưu vào tab “Sao kê & khác” — '+(p.note||'')}}
   /* mẫu chưa hỗ trợ: chỉ đưa vào hàng chờ khi đọc được cả số tiền và (số thẻ hoặc ngày) — tránh tạo GD rác từ ảnh không phải bill */
-  if(p.generic&&!(+p.amount>0&&p.last4&&String(p.ts||'').length>=10))return{st:'bad',p,msg:'Không nhận ra bill giao dịch trong ảnh — mẫu ngân hàng này chưa được hỗ trợ. Gửi ảnh mẫu để thêm.'};
-  if(!HC_TX(p.kind)||!(+p.amount>0)){it.status='info';it.review=true;it.note='Ảnh chụp chưa đọc được giao dịch'+(p.why?' · '+p.why:'');await put('inbox',it);return{st:'bad',p,msg:it.note}}
+  if(p.generic&&!(+p.amount>0&&p.last4&&String(p.ts||'').length>=10))return{id,st:'bad',p,msg:'Không nhận ra bill giao dịch trong ảnh — mẫu ngân hàng này chưa được hỗ trợ. Gửi ảnh mẫu để thêm.'};
+  if(!HC_TX(p.kind)||!(+p.amount>0)){it.status='info';it.review=true;it.note='Ảnh chụp chưa đọc được giao dịch'+(p.why?' · '+p.why:'');await put('inbox',it);return{id,st:'bad',p,msg:it.note}}
   if(p.why)it.note='Đọc từ ảnh: '+p.why;
   /* trùng giao dịch đã có từ email / thông báo app (cùng thẻ, số tiền, ngày, loại) */
   const same=D.inbox.find(x=>x.id!==id&&x.status!=='ignored'&&x.status!=='skip'&&HC_TX(x.kind)&&x.kind===it.kind&&+x.amount===+it.amount&&(!x.last4||!it.last4||x.last4===it.last4)&&(!x.bank||x.bank===it.bank)&&String(x.ts||'').slice(0,10)===day);
-  if(same){it.status='skip';it.dupOf=same.id;it.note=((it.note?it.note+' · ':'')+'Trùng '+({email:'email',android:'thông báo app',paste:'thông báo dán tay',bill:'bill khác'}[same.src]||'mục khác')+' cùng giao dịch'+(same.status==='done'?' (đã ghi sổ)':' (đang chờ duyệt)'));await put('inbox',it);return{st:'dup',p,msg:it.note}}
+  if(same){it.status='skip';it.dupOf=same.id;it.note=((it.note?it.note+' · ':'')+'Trùng '+({email:'email',android:'thông báo app',paste:'thông báo dán tay',bill:'bill khác'}[same.src]||'mục khác')+' cùng giao dịch'+(same.status==='done'?' (đã ghi sổ)':' (đang chờ duyệt)'));await put('inbox',it);return{id,st:'dup',p,msg:it.note}}
   await put('inbox',it);
   const cid=hcCard(it).cardId;
-  if(!cid)return{st:'wait',p,msg:'Chưa khớp thẻ nào (thẻ '+(p.last4||'?')+') — chọn thẻ trong Hàng chờ'};
-  if(hcDup(it,cid))return{st:'wait',p,msg:'Sổ đã có GD cùng thẻ, số tiền, ngày — kiểm tra trong Hàng chờ'};
-  if(!o.auto)return{st:'wait',p,msg:'Chờ anh duyệt'};
-  if(!p.sure)return{st:'wait',p,msg:'Chờ duyệt: '+(p.why||'cần kiểm tra')};
-  if(it.kind==='spend'){const c=D.cards.find(x=>x.id===cid);if((c.rules||[]).length>1&&!hcMcc(it,cid))return{st:'wait',p,msg:'Chờ chọn MCC (thẻ có nhiều nhóm hoàn tiền)'}}
-  if(await hcApprove(id,true,batch))return{st:'ok',p,msg:'Đã ghi vào sổ'};
-  return{st:'wait',p,msg:'Chờ duyệt'};
+  if(!cid)return{id,st:'wait',p,msg:'Chưa khớp thẻ nào (thẻ '+(p.last4||'?')+') — chọn thẻ trong Hàng chờ'};
+  if(hcDup(it,cid))return{id,st:'wait',p,msg:'Sổ đã có GD cùng thẻ, số tiền, ngày — kiểm tra trong Hàng chờ'};
+  if(!o.auto)return{id,st:'wait',p,msg:'Chờ anh duyệt'};
+  if(!p.sure)return{id,st:'wait',p,msg:'Chờ duyệt: '+(p.why||'cần kiểm tra')};
+  if(it.kind==='spend'){const c=D.cards.find(x=>x.id===cid);if((c.rules||[]).length>1&&!hcMcc(it,cid))return{id,st:'wait',p,msg:'Chờ chọn MCC (thẻ có nhiều nhóm hoàn tiền)'}}
+  if(await hcApprove(id,true,batch))return{id,st:'ok',p,msg:'Đã ghi vào sổ'};
+  return{id,st:'wait',p,msg:'Chờ duyệt'};
 }
 /* Ảnh chờ đọc: thêm dần nhiều lần, xem trước, xoá ảnh chọn nhầm, rồi đọc 1 lượt */
 let BILL_Q=[];
@@ -2583,12 +2583,46 @@ document.addEventListener('change',e=>{if(e.target.id!=='bsFile')return;const ha
   for(const f of e.target.files||[]){const k=f.name+'|'+f.size+'|'+f.lastModified;if(have.has(k))continue;have.add(k);BILL_Q.push({f,k,u:URL.createObjectURL(f)})}
   e.target.value='';billQDraw()});
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-bsrm]');if(!b)return;e.preventDefault();const x=BILL_Q.splice(+b.dataset.bsrm,1)[0];if(x)URL.revokeObjectURL(x.u);billQDraw()});
+/* Kết quả bóc tách: trạng thái lấy trực tiếp từ hàng chờ; GD chưa ghi có nút Ghi vào sổ / Bỏ qua, chọn thẻ & MCC ngay tại đây */
+let BILL_R=[];
+const billAutoOn=()=>{try{return localStorage.getItem('mbt_bill_auto')==='1'}catch(e){return false}};
+document.addEventListener('change',e=>{if(e.target.id==='bsAuto'){try{localStorage.setItem('mbt_bill_auto',e.target.checked?'1':'0')}catch(_){}}
+  if(e.target.closest&&e.target.closest('#bsRes')&&e.target.dataset.k==='cardId')setTimeout(billResDraw,80)});
+const billNeedMcc=it=>{if(it.kind!=='spend')return false;const cid=hcCard(it).cardId,c=D.cards.find(x=>x.id===cid);return !!(c&&(c.rules||[]).length>1&&!hcMcc(it,cid))};
+function billResDraw(){
+  const re=$('#bsRes');if(!re)return;
+  const K={spend:'Chi tiêu',refund:'Hoàn tiền',payment:'Thanh toán thẻ',stmt:'Sao kê'};
+  const L=BILL_R.map(r=>{const it=r.id&&D.inbox.find(x=>x.id===r.id);let st=r.st;if(it&&HC_TX(it.kind)){if(it.status==='done')st='ok';else if(it.status==='pending')st='wait';else if(it.status==='skip'&&r.st!=='dup')st='skip'}return{...r,it,st}});
+  const n=st=>L.filter(r=>r.st===st).length,P=L.filter(r=>r.st==='wait'),ready=P.filter(r=>hcCard(r.it).cardId&&+r.it.amount>0&&!billNeedMcc(r.it));
+  const m=$('#bsMsg');if(m)m.textContent=`Xong ${L.length} ảnh: ${n('ok')} đã ghi sổ · ${n('wait')} chờ ghi · ${n('dup')+n('skip')} trùng/bỏ qua · ${n('bad')} không đọc được${n('info')?' · '+n('info')+' sao kê':''}`;
+  const IC={ok:'✅',wait:'⏳',dup:'↺',skip:'↺',bad:'⚠️',info:'📄'};
+  re.innerHTML=(ready.length>1?`<div class="row" style="justify-content:flex-end;margin-top:8px">${btn('Ghi tất cả '+ready.length+' GD đủ thông tin','bs-okall',null,'p','check')}</div>`:'')+L.map(r=>{
+    const it=r.it,p=it||r.p||{},cid=p.amount?hcCard(it||{...p,owner:r.owner}).cardId:'',c=cid?D.cards.find(x=>x.id===cid):null;
+    let ctl='';
+    if(r.st==='wait'&&it){
+      const mcc=hcMcc(it,cid);
+      ctl=`<div class="fg" data-hc="${esc(it.id)}" style="margin-top:6px">${cid?'':fld('Chọn thẻ',`<select data-k="cardId"><option value="">⚠ Chọn thẻ…</option>${D.cards.filter(x=>!p.bank||x.bank===p.bank).concat(D.cards.filter(x=>p.bank&&x.bank!==p.bank)).map(x=>`<option value="${x.id}">${cname(x)}${x.owner?' — '+esc(x.owner):''}</option>`).join('')}</select>`,'w2')}${it.kind==='spend'&&c&&(c.rules||[]).length?fld('MCC'+(billNeedMcc(it)?' <span class="chip w">cần chọn</span>':''),`<select data-k="mcc">${mccOpts(c,mcc)}</select>`):''}</div>
+      <div class="row" style="justify-content:flex-end;margin-top:6px">${btn('Bỏ qua','bs-skip',it.id,'s')}${btn('Ghi vào sổ','bs-ok',it.id,'s p','check')}</div>`;
+    }
+    const old=r.msg==='Bill này đã đọc trước đây',msg=(old?'Bill đã đọc trước đây · ':'')+(r.st==='ok'?'Đã ghi vào sổ':r.st==='skip'?'Đã bỏ qua':r.st==='wait'?(old||r.msg==='Đã ghi vào sổ'?'Chưa ghi sổ':r.msg):old?'':r.msg);
+    return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>${IC[r.st]||''} ${K[p.kind]||'—'} ${p.amount?fmt(p.amount)+' ₫':''}</b> <span class="hint">${p.ts?dmy(pd(String(p.ts).slice(0,10))):''}${c?' · '+cname(c)+(c.owner?' · <b>'+esc(noAccent(c.owner).toUpperCase())+'</b>':''):p.last4?' · thẻ …'+esc(p.last4):''}</span><div class="hint">${esc(p.merchant||'')}${p.merchant?' · ':''}${esc(msg||'')}</div>${ctl}</div>`}).join('');
+}
+async function billOk(id,silent,bt){
+  const it=D.inbox.find(x=>x.id===id);if(!it||it.status!=='pending')return false;
+  if(billNeedMcc(it)){if(!silent)toast('Chọn MCC cho giao dịch này');return false}
+  return hcApprove(id,silent,bt);
+}
+Object.assign(ACT,{
+  'bs-ok':async id=>{if(await billOk(id)){toast('Đã ghi vào sổ giao dịch');billResDraw()}},
+  'bs-skip':async id=>{const it=D.inbox.find(x=>x.id===id);if(it){await put('inbox',{...it,status:'skip'});billResDraw()}},
+  'bs-okall':async()=>{let n=0;const bt='b'+Date.now();for(const r of BILL_R){if(await billOk(r.id,true,bt))n++}toast('Đã ghi '+n+' giao dịch');billResDraw()}
+});
 function billScan(){
-  billQClear();
+  billQClear();BILL_R=[];
   openModal('Thêm giao dịch từ ảnh chụp bill',`<p class="hint" style="margin:0 0 10px">Chọn ảnh chụp màn hình “Chi tiết giao dịch” trong app ngân hàng (thêm được nhiều ảnh, đọc 1 lượt). App đọc chữ ngay trên máy — ảnh không gửi đi đâu. Đọc chắc chắn: <b>BIDV SmartBanking</b> (Chi tiết giao dịch) và <b>Sacombank Pay</b> (Thông báo giao dịch, tiền vào thẻ, nhắc sao kê).</p>
   <div class="fg"><div class="f w2"><label>Ảnh bill — bấm “Thêm ảnh” bao nhiêu lần cũng được, mỗi lần chọn được nhiều ảnh, rồi đọc 1 lượt</label><label class="btn" style="justify-content:center;cursor:pointer;position:relative">${ico('plus',15)}Thêm ảnh<input type="file" id="bsFile" accept="image/*" multiple style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer"></label><div id="bsList"></div></div>
   ${fld('Chủ thẻ (không bắt buộc — dùng khi nhiều thẻ trùng 4 số cuối)',ownerBox('name="owner"',''),'w2')}
-  <label class="w2" style="display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:4px;cursor:pointer"><input type="checkbox" name="auto" checked style="width:18px;height:18px;flex:none;margin-top:1px"><span>Tự ghi vào sổ khi đọc chắc chắn (đủ số tiền, số thẻ, ngày, khớp thẻ, không trùng). Còn lại đưa vào Hàng chờ để anh duyệt.</span></label></div>
+  <label class="w2" style="display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:4px;cursor:pointer"><input type="checkbox" name="auto" id="bsAuto"${billAutoOn()?' checked':''} style="width:18px;height:18px;flex:none;margin-top:1px"><span>Tự ghi vào sổ khi đọc chắc chắn (đủ số tiền, số thẻ, ngày, khớp thẻ, không trùng). Bỏ chọn: app chỉ bóc tách, anh xem đúng rồi bấm <b>Ghi vào sổ</b> từng GD hoặc <b>Ghi tất cả</b>.</span></label></div>
   <div id="bsMsg" class="hint" style="margin-top:8px;font-weight:600"></div><div id="bsRes"></div>`,
   {ok:'Đọc ảnh',onSubmit:async o=>{
     const fs=BILL_Q.map(x=>x.f);if(!fs.length){toast('Bấm “Thêm ảnh” để chọn ảnh bill');return}
@@ -2603,10 +2637,7 @@ function billScan(){
         catch(e){R.push({st:'bad',p:{},msg:'Ảnh '+(fs[i].name||i+1)+': '+(e.message||'lỗi')})}
       }
     }catch(e){msg('');toast(e.message||'Không đọc được ảnh');if(sb)sb.disabled=false;return}
-    const K={spend:'Chi tiêu',refund:'Hoàn tiền',payment:'Thanh toán thẻ',stmt:'Sao kê'},IC={ok:'✅',wait:'⏳',dup:'↺',bad:'⚠️',info:'📄'};
-    const n=st=>R.filter(r=>r.st===st).length;
-    msg(`Xong ${R.length} ảnh: ${n('ok')} đã ghi sổ · ${n('wait')} chờ duyệt · ${n('dup')} trùng · ${n('bad')} không đọc được${n('info')?' · '+n('info')+' sao kê':''}`);
-    const re=$('#bsRes');if(re)re.innerHTML=R.map(r=>{const p=r.p||{},c=p.amount?D.cards.find(x=>x.id===hcCard({...p,owner:o.owner}).cardId):null;return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>${IC[r.st]} ${K[p.kind]||'—'} ${p.amount?fmt(p.amount)+' ₫':''}</b> <span class="hint">${p.ts?dmy(pd(String(p.ts).slice(0,10))):''}${c?' · '+cname(c)+(c.owner?' · <b>'+esc(noAccent(c.owner).toUpperCase())+'</b>':''):p.last4?' · thẻ …'+esc(p.last4):''}</span><div class="hint">${esc(p.merchant||'')}${p.merchant?' · ':''}${esc(r.msg)}</div></div>`}).join('');
+    BILL_R=R.map(r=>({...r,owner:o.owner||''}));billResDraw();
     billQClear();if(sb)sb.disabled=false;billQDraw();
     render();
   }});
