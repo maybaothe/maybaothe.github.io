@@ -454,6 +454,7 @@ async function initStore(){
       const arr=snap.docs.map(d=>({id:d.id,...d.data()}));
       if(col==='settings'){D.settings=arr.find(x=>x.id==='main')||{}}else D[col]=arr;DV++;
       D.loaded=(D.loaded||0)+1;render();
+      if(col==='inbox'&&!window._hcRP){window._hcRP=1;setTimeout(()=>{try{hcReparse()}catch(_){}},2000)}
     },e=>{D.loaded=(D.loaded||0)+1;toast('Lỗi đồng bộ: '+(e.message||e.code||''));render()});
   });
   return true;
@@ -1993,7 +1994,7 @@ function ntfParse(txt,meta={}){
   else if(isCard&&refundKw.test(n))r.kind='refund';
   else if(isCard&&spendKw.test(n))r.kind='spend';
   // số tiền
-  const NUM='([+-]?\\s?\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?|[+-]?\\d{4,}(?:[.,]\\d{1,2})?)';
+  const NUM='([+-]?\\s?\\d{1,3}(?:[.,]\\d{3})+(?:[.,]\\d{1,2})?(?![\\d])|[+-]?\\d{4,}(?:[.,]\\d{1,2})?(?![\\d]))';
   const cur='\\s*(?:d\\b|đ|vnd|vnđ|dong)';
   const tries=r.kind==='stmt'?[new RegExp('(?:tong du no cuoi ky|du no cuoi ky|tong du no|du no)[^\\d+-]{0,12}'+NUM,'i')]:[
     new RegExp('(?:giao dich|\\bgd\\b|so tien|thanh toan|chi tieu|hoan tien|hoan tra|\\bps\\b)[^\\d+-]{0,25}'+NUM,'i'),
@@ -2407,6 +2408,13 @@ async function hcSync(auto){
     if(!auto||!/not_granted|capability_disabled|approval_required|not_in_manifest/.test(c||''))toast(HC_ERR[c]||(c==='server_unavailable'||c==='upstream_error'?'Gmail đang không phản hồi, thử lại sau ít phút.':'Không đọc được Gmail'+(e&&e.message?': '+e.message:'')));
   }
   HC_BUSY=false;render();
+}
+/* Đọc lại số tiền GD chờ duyệt (thông báo app/dán tay) bằng bộ đọc mới — sửa lỗi lấy nhầm số trong nội dung như "T10.2026" */
+async function hcReparse(){
+  for(const it of D.inbox.filter(x=>x.status==='pending'&&(x.src==='android'||x.src==='paste')&&x.raw&&!(x.rp>=1))){
+    const p=ntfParse(it.raw,{date:it.ts||nowLocal()});const o={...it,rp:1};
+    if(p.amount&&p.amount!==+it.amount)o.amount=p.amount;
+    await put('inbox',o)}
 }
 /* Lần ghi gần nhất (để hoàn tác): cùng mã lô, hoặc (thư ghi trước khi có mã lô) các GD ghi liền nhau cách nhau < 15 giây */
 function hcLastBatch(){
