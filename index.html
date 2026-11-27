@@ -2457,6 +2457,125 @@ function hcPaste(){
     closeModal();UI.hcTab='pending';toast('Đã đọc '+n+' thông báo');render();
   }});
 }
+/* ===== Đọc bill chụp màn hình app ngân hàng (OCR chạy ngay trên máy — ảnh không gửi đi đâu, không tốn token) ===== */
+const BILL_LIB='https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+let BILL_W=null;
+async function billWorker(msg){
+  if(BILL_W)return BILL_W;
+  if(!window.Tesseract)await new Promise((ok,no)=>{const s=document.createElement('script');s.src=BILL_LIB;s.onload=ok;s.onerror=()=>no(new Error('Không tải được bộ đọc ảnh — kiểm tra mạng rồi thử lại'));document.head.appendChild(s)});
+  msg('Đang tải bộ đọc chữ tiếng Việt (chỉ lần đầu, ~5 MB)…');
+  BILL_W=await Tesseract.createWorker('vie+eng',1,{logger:m=>{if(m.status==='recognizing text')msg('Đang đọc chữ trên ảnh… '+Math.round((m.progress||0)*100)+'%')}});
+  return BILL_W;
+}
+/* Ảnh nền tối (app BIDV) → đảo màu, tăng tương phản để đọc chính xác */
+async function billPrep(file){
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>no(new Error('Không mở được ảnh '+(file.name||'')));i.src=url});
+    let w=img.naturalWidth,h=img.naturalHeight;const k=w>1500?1500/w:w<800?2:1;w=Math.round(w*k);h=Math.round(h*k);
+    const cv=document.createElement('canvas');cv.width=w;cv.height=h;const x=cv.getContext('2d');x.drawImage(img,0,0,w,h);
+    const d=x.getImageData(0,0,w,h),p=d.data;let s=0;
+    for(let i=0;i<p.length;i+=4){const g=0.299*p[i]+0.587*p[i+1]+0.114*p[i+2];p[i]=g;s+=g}
+    const inv=s/(p.length/4)<128;
+    for(let i=0;i<p.length;i+=4){let v=inv?255-p[i]:p[i];v=Math.max(0,Math.min(255,(v-60)*1.6));p[i]=p[i+1]=p[i+2]=v;p[i+3]=255}
+    x.putImageData(d,0,0);return cv;
+  }finally{URL.revokeObjectURL(url)}
+}
+/* Đọc chữ của bill → giao dịch. BIDV SmartBanking (màn “Chi tiết giao dịch” thẻ tín dụng) đọc chắc chắn; ngân hàng khác dùng bộ đọc thông báo chung */
+function billParse(txt){
+  const raw=String(txt||'').normalize('NFC').replace(/\r/g,'').replace(/[ \t]+/g,' ').trim();
+  const A=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D');
+  const t=A(raw).replace(/[–—−]/g,'-');
+  const L='(?:so\\s*tien\\s*giao\\s*dich|so\\s*tien\\s*quy\\s*doi|noi\\s*dung\\s*giao\\s*dich|ngay\\s*giao\\s*dich|ngay\\s*quyet\\s*toan|so\\s*the|so\\s*chuan\\s*chi|tao\\s*tra\\s*soat)';
+  const after=(lab)=>{const m=t.match(new RegExp(lab+'\\s*:?\\s*([\\s\\S]*?)(?='+L+'|$)','i'));return m?m[1].trim():''};
+  const AMT=/([+-]?)\s*(\d{1,3}(?:[.,]\s?\d{3})+|\d{4,})(?:[.,]\d{1,2}(?!\d))?\s*(VND|USD|EUR|JPY|SGD|THB|KRW|CNY|GBP|AUD|HKD|TWD)?/;
+  const am=s=>{s=String(s).replace(/(\d)[OoD]/g,'$10').replace(/(\d)[OoD]/g,'$10').replace(/[Oo](\d)/g,'0$1');const m=s.match(AMT);return m?{sign:m[1]==='-'?-1:m[1]==='+'?1:0,v:ntfAmt(m[2].replace(/\s/g,'')),cur:m[3]||'VND'}:null};
+  const isBidv=/so\s*chuan\s*chi|ngay\s*quyet\s*toan|quy\s*doi\s*noi\s*te/i.test(t);
+  if(!isBidv){
+    const p=ntfParse(raw,{date:''});
+    return{...p,raw:raw.slice(0,1500),sure:false,why:'Mẫu bill chưa hỗ trợ đọc chắc chắn — kiểm tra lại'};
+  }
+  const p2=x=>String(x).padStart(2,'0');
+  const a1=am(after('so\\s*tien\\s*giao\\s*dich')),a2=am(after('so\\s*tien\\s*quy\\s*doi(?:\\s*noi\\s*te)?'));
+  const dOf=s=>{const m=String(s).match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})/);return m?`${m[3]}-${p2(m[2])}-${p2(m[1])}`:''};
+  const date=dOf(after('ngay\\s*giao\\s*dich')),settle=dOf(after('ngay\\s*quyet\\s*toan'));
+  const cm=after('so\\s*the').match(/(\d{4,8})\s*[*xX•.·]{2,}\s*(\d{4})/)||t.match(/(\d{4,8})\s*[*xX•]{3,}\s*(\d{4})/);
+  const ap=(after('so\\s*chuan\\s*chi').match(/^([A-Z0-9]{4,12})\b/i)||[])[1]||'';
+  /* nội dung: nối các dòng bị ngắt (dòng kết thúc bằng - hoặc _ thì nối liền) */
+  const content=after('noi\\s*dung\\s*giao\\s*dich').split(/\n+/).map(s=>s.trim()).filter(Boolean).reduce((o,s)=>o?(/[-_]$/.test(o)?o+s:o+' '+s):s,'').replace(/\s*_\s*/g,'_').replace(/\s+/g,' ').trim();
+  const cz=ntfNz(content);
+  const amtO=a2&&a2.v?a2:a1,amount=amtO?amtO.v:0,sign=(a1&&a1.sign)||(a2&&a2.sign)||0;
+  let kind;
+  if(/refund|hoan tien|hoan tra|reversal|cashback|cash back|tra lai|huy giao dich/.test(cz))kind='refund';
+  else if(/payment to client|payment from|thanh toan the|thanh toan du no|tra no|repayment|nop tien|ghi co/.test(cz))kind='payment';
+  else if(sign<0)kind='spend';
+  else kind=sign>0?'payment':'spend';
+  /* điểm bán: Retail_VNM_TAY NINH_HKD LAGOM 1994-1 → HKD LAGOM 1994-1 */
+  let merchant=content;
+  if(kind!=='payment'){const ps=content.replace(/^(?:retail|ecom|e-?commerce|pos|atm|online)_/i,'').split('_').filter(Boolean);if(ps.length>=3&&/^[A-Z]{2,3}$/.test(ps[0]))merchant=ps.slice(2).join(' ');else if(ps.length===2&&/^[A-Z]{2,3}$/.test(ps[0]))merchant=ps[1];else merchant=ps.join(' ')}
+  merchant=merchant.slice(0,80);
+  const why=[];
+  if(!amount)why.push('không đọc được số tiền');
+  if(a1&&a2&&a1.cur==='VND'&&a2.cur==='VND'&&a1.v!==a2.v)why.push('2 số tiền trên bill không khớp nhau');
+  if(!a2||!a2.v)why.push('thiếu số tiền quy đổi nội tệ');
+  else if(amount<1000)why.push('số tiền bất thường');
+  if(!cm)why.push('không đọc được số thẻ');
+  if(!date)why.push('không đọc được ngày');
+  if(!sign&&!/refund|payment|hoan|thanh toan|tra no|nop tien|ghi co|reversal|cashback/.test(cz))why.push('không rõ tiền vào hay tiền ra');
+  return{bank:'BIDV',kind,amount,sign,last4:cm?cm[2]:'',first:cm?cm[1]:'',cardName:'',merchant,content,ts:date,settle,appr:ap,cur:a1&&a1.cur!=='VND'?a1.cur:'VND',raw:raw.slice(0,1500),sure:!why.length,why:why.join(', ')};
+}
+/* Tạo mục hàng chờ từ bill; trả về kết quả để báo lại */
+async function billAdd(p,o,batch){
+  const day=String(p.ts||'').slice(0,10);
+  const id='b_'+[p.bank||'x',p.last4||'x',day||'x',p.kind,+p.amount||0].join('_').replace(/[^A-Za-z0-9_-]/g,'');
+  const ex=D.inbox.find(x=>x.id===id);
+  if(ex)return{st:'dup',p,msg:'Bill này đã đọc trước đây'};
+  const it={id,src:'bill',owner:(o.owner||'').trim(),recv:new Date().toISOString(),subject:'',from:'',...p,status:HC_TX(p.kind)?'pending':'info'};
+  delete it.sure;delete it.why;
+  if(!HC_TX(p.kind)||!(+p.amount>0)){it.status='info';it.review=true;it.note='Ảnh chụp chưa đọc được giao dịch'+(p.why?' · '+p.why:'');await put('inbox',it);return{st:'bad',p,msg:it.note}}
+  if(p.why)it.note='Đọc từ ảnh: '+p.why;
+  /* trùng giao dịch đã có từ email / thông báo app (cùng thẻ, số tiền, ngày, loại) */
+  const same=D.inbox.find(x=>x.id!==id&&x.status!=='ignored'&&x.status!=='skip'&&HC_TX(x.kind)&&x.kind===it.kind&&+x.amount===+it.amount&&(!x.last4||!it.last4||x.last4===it.last4)&&(!x.bank||x.bank===it.bank)&&String(x.ts||'').slice(0,10)===day);
+  if(same){it.status='skip';it.dupOf=same.id;it.note=((it.note?it.note+' · ':'')+'Trùng '+({email:'email',android:'thông báo app',paste:'thông báo dán tay',bill:'bill khác'}[same.src]||'mục khác')+' cùng giao dịch'+(same.status==='done'?' (đã ghi sổ)':' (đang chờ duyệt)'));await put('inbox',it);return{st:'dup',p,msg:it.note}}
+  await put('inbox',it);
+  const cid=hcCard(it).cardId;
+  if(!cid)return{st:'wait',p,msg:'Chưa khớp thẻ nào (thẻ '+(p.last4||'?')+') — chọn thẻ trong Hàng chờ'};
+  if(hcDup(it,cid))return{st:'wait',p,msg:'Sổ đã có GD cùng thẻ, số tiền, ngày — kiểm tra trong Hàng chờ'};
+  if(!o.auto)return{st:'wait',p,msg:'Chờ anh duyệt'};
+  if(!p.sure)return{st:'wait',p,msg:'Chờ duyệt: '+(p.why||'cần kiểm tra')};
+  if(it.kind==='spend'){const c=D.cards.find(x=>x.id===cid);if((c.rules||[]).length>1&&!hcMcc(it,cid))return{st:'wait',p,msg:'Chờ chọn MCC (thẻ có nhiều nhóm hoàn tiền)'}}
+  if(await hcApprove(id,true,batch))return{st:'ok',p,msg:'Đã ghi vào sổ'};
+  return{st:'wait',p,msg:'Chờ duyệt'};
+}
+function billScan(){
+  openModal('Thêm giao dịch từ ảnh chụp bill',`<p class="hint" style="margin:0 0 10px">Chọn ảnh chụp màn hình “Chi tiết giao dịch” trong app ngân hàng (chọn được nhiều ảnh). App đọc chữ ngay trên máy — ảnh không gửi đi đâu. Hiện đọc chắc chắn mẫu <b>BIDV SmartBanking</b>: chi tiêu, thanh toán thẻ, hoàn tiền.</p>
+  <div class="fg"><div class="f w2"><label>Ảnh bill</label><input type="file" id="bsFile" accept="image/*" multiple required></div>
+  ${fld('Chủ thẻ (không bắt buộc — dùng khi nhiều thẻ trùng 4 số cuối)',ownerBox('name="owner"',''),'w2')}
+  <label class="w2" style="display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:4px;cursor:pointer"><input type="checkbox" name="auto" checked style="width:18px;height:18px;flex:none;margin-top:1px"><span>Tự ghi vào sổ khi đọc chắc chắn (đủ số tiền, số thẻ, ngày, khớp thẻ, không trùng). Còn lại đưa vào Hàng chờ để anh duyệt.</span></label></div>
+  <div id="bsMsg" class="hint" style="margin-top:8px;font-weight:600"></div><div id="bsRes"></div>`,
+  {ok:'Đọc ảnh',onSubmit:async o=>{
+    const fs=[...(($('#bsFile')||{}).files||[])];if(!fs.length){toast('Chọn ảnh bill');return}
+    const sb=$('#mf [type=submit]');if(sb){if(sb.disabled)return;sb.disabled=true}
+    const msg=m=>{const e=$('#bsMsg');if(e)e.textContent=m};
+    const R=[],bt='b'+Date.now();
+    try{
+      const w=await billWorker(msg);
+      for(let i=0;i<fs.length;i++){
+        msg('Ảnh '+(i+1)+'/'+fs.length+': đang đọc…');
+        try{const cv=await billPrep(fs[i]);const r=await w.recognize(cv);R.push(await billAdd(billParse(r.data.text),o,bt))}
+        catch(e){R.push({st:'bad',p:{},msg:'Ảnh '+(fs[i].name||i+1)+': '+(e.message||'lỗi')})}
+      }
+    }catch(e){msg('');toast(e.message||'Không đọc được ảnh');if(sb)sb.disabled=false;return}
+    const K={spend:'Chi tiêu',refund:'Hoàn tiền',payment:'Thanh toán thẻ'},IC={ok:'✅',wait:'⏳',dup:'↺',bad:'⚠️'};
+    const n=st=>R.filter(r=>r.st===st).length;
+    msg(`Xong ${R.length} ảnh: ${n('ok')} đã ghi sổ · ${n('wait')} chờ duyệt · ${n('dup')} trùng · ${n('bad')} không đọc được`);
+    const re=$('#bsRes');if(re)re.innerHTML=R.map(r=>{const p=r.p||{},c=p.amount?D.cards.find(x=>x.id===hcCard({...p,owner:o.owner}).cardId):null;return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>${IC[r.st]} ${K[p.kind]||'—'} ${p.amount?fmt(p.amount)+' ₫':''}</b> <span class="hint">${p.ts?dmy(pd(String(p.ts).slice(0,10))):''}${c?' · '+cname(c):p.last4?' · thẻ …'+esc(p.last4):''}</span><div class="hint">${esc(p.merchant||'')}${p.merchant?' · ':''}${esc(r.msg)}</div></div>`}).join('');
+    if(sb){sb.disabled=false;sb.textContent='Đọc thêm ảnh'}
+    const f=$('#bsFile');if(f)f.value='';
+    render();
+  }});
+}
+ICO.cam='M4 8h3l2-3h6l2 3h3v11H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z';
 function hcCfg(){
   const s=S();
   openModal('Cài đặt đọc giao dịch từ Gmail',`<div class="fg">${fld('Nhãn Gmail chứa email giao dịch',inp('gmLabel',s.gmLabel||'MayBaoThe','MayBaoThe'))}${fld('Gmail trung gian (hộp nhận)',inp('hubMail',s.hubMail||'','vd: maybaothe.xxx@gmail.com'))}<div class="f w2"><label>Email của chủ thẻ (dùng cho email chuyển tiếp) — mỗi dòng: email = Tên chủ thẻ</label><textarea name="ownerMap" rows="4" placeholder="lieu@gmail.com = Liểu&#10;hoanh@icloud.com = Hoanh">${esc(s.ownerMap||'')}</textarea></div>${fld('Lấy lại từ ngày (để trống = tiếp tục từ lần trước)',`<input type="date" name="from" value="">`)}</div>`,
@@ -2520,7 +2639,7 @@ function pgHangCho(){
   if(tab==='pending')body+=P.length?`${ready>1?`<div class="row" style="justify-content:flex-end">${btn('Ghi tất cả '+ready+' giao dịch đủ thông tin, không trùng','hc-okall',null,'p','check')}</div>`:''}<div class="row" style="justify-content:flex-end;margin-top:6px">${btn('Bỏ qua tất cả '+P.length+' GD đang hiển thị','hc-skipall',null,'s d','x')}</div>${srt(P).slice(0,UI.hcLim||20).map(hcItem).join('')}${P.length>(UI.hcLim||20)?`<div class="row" style="justify-content:center;margin:12px 0">${btn('Xem thêm '+Math.min(20,P.length-(UI.hcLim||20))+' giao dịch (còn '+(P.length-(UI.hcLim||20))+')','hc-more',null,'s')}</div>`:''}`:empty('Không có giao dịch chờ duyệt','Bấm “Lấy giao dịch mới” để đọc email từ Gmail.',btn('Lấy giao dịch mới','hc-sync',null,'p','repeat'));
   else if(tab==='info')body+=I.length?srt(I).map(hcInfo).join(''):empty('Trống','Thông báo sao kê, biến động tài khoản thanh toán và email không đọc được sẽ nằm ở đây.');
   else{const L=srt(tab==='done'?Dn:Sk).slice(0,200);if(tab==='done'){const LB=hcLastBatch();if(LB.length>1){const t0=new Date(LB[0].doneAt);body+=`<div class="row" style="justify-content:flex-end;margin-bottom:8px">${btn('Hoàn tác lần ghi gần nhất: '+LB.length+' GD lúc '+String(t0.getHours()).padStart(2,'0')+':'+String(t0.getMinutes()).padStart(2,'0')+' '+t0.getDate()+'/'+(t0.getMonth()+1),'hc-undo',null,'s d','x')}</div>`}}body+=L.length?`<div class="card tw"><table><thead><tr><th>Thời gian</th><th>Thẻ</th><th class="n">Số tiền</th><th>Nội dung</th><th></th></tr></thead><tbody>${L.map(it=>{const c=D.cards.find(x=>x.id===it.cardId);return `<tr><td>${it.ts?dtShow(it.ts):''}</td><td>${c?cname(c):'—'}</td><td class="n">${fmt(it.amount)}</td><td class="dsc">${esc(it.merchant||String(it.raw||'').slice(0,60))}</td><td>${tab==='skip'?btn('Khôi phục','hc-req',it.id,'s'):chip('Đã ghi','g')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Trống','');}
-  return hd('Hàng chờ giao dịch','Giao dịch tự lấy từ thông báo ngân hàng qua Gmail — anh duyệt rồi mới ghi vào sổ',btn('Cài đặt','hc-cfg',null,'','gear')+btn('Dán thông báo','hc-paste',null,'','plus')+btn(HC_BUSY?'Đang đọc…':'Lấy giao dịch mới','hc-sync',null,'p','repeat'))+
+  return hd('Hàng chờ giao dịch','Giao dịch tự lấy từ thông báo ngân hàng qua Gmail — anh duyệt rồi mới ghi vào sổ',btn('Cài đặt','hc-cfg',null,'','gear')+btn('Dán thông báo','hc-paste',null,'','plus')+btn('Chụp bill','bill-scan',null,'','cam')+btn(HC_BUSY?'Đang đọc…':'Lấy giao dịch mới','hc-sync',null,'p','repeat'))+
   `<p class="hint" style="margin:-6px 0 0">${UI.hcMsg?'<b>'+esc(UI.hcMsg)+'</b> · ':''}Lần lấy gần nhất: ${last} · nhãn Gmail “${esc(S().gmLabel||'MayBaoThe')}”</p>`+
   fBar+`<div class="tabs" role="tablist">${T.map(t=>`<button class="${tab===t[0]?'on':''}" data-a="hc-tab" data-id="${t[0]}">${t[1]} <span class="mut">${t[2]}</span></button>`).join('')}</div>`+body+hcGuide();
 }
@@ -2543,7 +2662,7 @@ document.addEventListener('change',async e=>{
 });
 Object.assign(ACT,{
   'tx-more':()=>{UI.txLim=(UI.txLim||100)+100;render()},
-  'hc-sync':()=>hcSync(),'hc-paste':()=>hcPaste(),'hc-cfg':()=>hcCfg(),
+  'hc-sync':()=>hcSync(),'hc-paste':()=>hcPaste(),'bill-scan':()=>billScan(),'hc-cfg':()=>hcCfg(),
   'hc-tab':id=>{UI.hcTab=id;UI.hcLim=20;render()},
   'hc-more':()=>{UI.hcLim=(UI.hcLim||20)+20;render()},
   'hc-ok':async id=>{if(await hcApprove(id))toast('Đã ghi vào sổ giao dịch')},
@@ -3238,7 +3357,7 @@ function sheet(title,html){
   document.body.appendChild(d);
 }
 function closeSheet(){const s=document.getElementById('uxs');if(s)s.remove()}
-const QUICK=[['tx-new','plus','Thêm giao dịch','p'],['voice','mic','Nhập bằng giọng nói'],['ux:sync','repeat','Lấy giao dịch mới (mail)'],['hc-paste','inbox','Dán thông báo ngân hàng'],['spend-bulk','card','Chi tiêu nhiều thẻ'],['pay-bulk','pay','Thanh toán dư nợ'],['w-new','wallet','Thu / Chi ví'],['card-new','card','Thêm thẻ mới'],['ux:bot','chat','Trợ lý tra cứu']];
+const QUICK=[['tx-new','plus','Thêm giao dịch','p'],['voice','mic','Nhập bằng giọng nói'],['ux:sync','repeat','Lấy giao dịch mới (mail)'],['bill-scan','cam','Thêm GD từ ảnh chụp bill'],['hc-paste','inbox','Dán thông báo ngân hàng'],['spend-bulk','card','Chi tiêu nhiều thẻ'],['pay-bulk','pay','Thanh toán dư nợ'],['w-new','wallet','Thu / Chi ví'],['card-new','card','Thêm thẻ mới'],['ux:bot','chat','Trợ lý tra cứu']];
 function quickSheet(){
   sheet('Thêm nhanh',`<div class="uxq">${QUICK.filter(q=>q[0].startsWith('ux:')||ACT[q[0]]).map(([a,ic,l,c])=>a.startsWith('ux:')?`<button type="button" class="${c||''}" data-ux="${a.slice(3)}">${ico(ic,22)}${l}</button>`:`<button type="button" class="${c||''}" data-a="${a}">${ico(ic,22)}${l}</button>`).join('')}</div>`);
 }
