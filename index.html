@@ -2593,7 +2593,7 @@ function billScan(){
     const K={spend:'Chi tiêu',refund:'Hoàn tiền',payment:'Thanh toán thẻ',stmt:'Sao kê'},IC={ok:'✅',wait:'⏳',dup:'↺',bad:'⚠️',info:'📄'};
     const n=st=>R.filter(r=>r.st===st).length;
     msg(`Xong ${R.length} ảnh: ${n('ok')} đã ghi sổ · ${n('wait')} chờ duyệt · ${n('dup')} trùng · ${n('bad')} không đọc được${n('info')?' · '+n('info')+' sao kê':''}`);
-    const re=$('#bsRes');if(re)re.innerHTML=R.map(r=>{const p=r.p||{},c=p.amount?D.cards.find(x=>x.id===hcCard({...p,owner:o.owner}).cardId):null;return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>${IC[r.st]} ${K[p.kind]||'—'} ${p.amount?fmt(p.amount)+' ₫':''}</b> <span class="hint">${p.ts?dmy(pd(String(p.ts).slice(0,10))):''}${c?' · '+cname(c):p.last4?' · thẻ …'+esc(p.last4):''}</span><div class="hint">${esc(p.merchant||'')}${p.merchant?' · ':''}${esc(r.msg)}</div></div>`}).join('');
+    const re=$('#bsRes');if(re)re.innerHTML=R.map(r=>{const p=r.p||{},c=p.amount?D.cards.find(x=>x.id===hcCard({...p,owner:o.owner}).cardId):null;return `<div class="card" style="padding:8px 10px;margin-top:8px"><b>${IC[r.st]} ${K[p.kind]||'—'} ${p.amount?fmt(p.amount)+' ₫':''}</b> <span class="hint">${p.ts?dmy(pd(String(p.ts).slice(0,10))):''}${c?' · '+cname(c)+(c.owner?' · <b>'+esc(noAccent(c.owner).toUpperCase())+'</b>':''):p.last4?' · thẻ …'+esc(p.last4):''}</span><div class="hint">${esc(p.merchant||'')}${p.merchant?' · ':''}${esc(r.msg)}</div></div>`}).join('');
     if(sb){sb.disabled=false;sb.textContent='Đọc thêm ảnh'}
     const f=$('#bsFile');if(f)f.value='';
     render();
