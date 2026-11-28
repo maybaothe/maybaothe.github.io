@@ -454,6 +454,7 @@ async function initStore(){
       const arr=snap.docs.map(d=>({id:d.id,...d.data()}));
       if(col==='settings'){D.settings=arr.find(x=>x.id==='main')||{}}else D[col]=arr;DV++;
       D.loaded=(D.loaded||0)+1;render();
+      if(col==='cards'&&!window._wbM){window._wbM=1;setTimeout(()=>{try{wbMig()}catch(_){}},2500)}
       if(col==='inbox'&&!window._hcRP){window._hcRP=1;setTimeout(()=>{try{hcReparse()}catch(_){}},2000)}
     },e=>{D.loaded=(D.loaded||0)+1;toast('Lỗi đồng bộ: '+(e.message||e.code||''));render()});
   });
@@ -503,7 +504,8 @@ function calcCard(c,ref){
   const cp=capProg(c,D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&ymd(rEnd(c,pd(t.ts)))===rKey)),spent=cp.spent,need2=cp.need;
   const cycSpend=sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&ymd(nextStmt(c,pd(t.ts)))===curKey),t=>t.amount);
   const dts=diff(ref,rE),post=+c.postDays||0,kyTruoc=sum(closed,x=>x.out),kyNay=sum(open,x=>x.out);
-  return skApply(c,ref,{curSt,curKey,cycles,closed,kyTruoc,kyNay,debt:kyTruoc+kyNay,credit:rem,need:need2,spent,cycSpend,miss:Math.max(0,need2-spent),over:+c.capAll>0?0:Math.max(0,spent-need2),dts,daysLeft:dts-post,deadline:addD(rE,-post),rEnd:rE,rKey,rStart,rMonth:rcm(c),curDue:dueOf(c,curSt)});
+  const minTotal=+c.minTotal||0,totSpend=minTotal>0?sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&ymd(rEnd(c,pd(t.ts)))===rKey),t=>t.amount):0,totMiss=Math.max(0,minTotal-totSpend);
+  return skApply(c,ref,{minTotal,totSpend,totMiss,curSt,curKey,cycles,closed,kyTruoc,kyNay,debt:kyTruoc+kyNay,credit:rem,need:need2,spent,cycSpend,miss:Math.max(0,need2-spent,totMiss),over:+c.capAll>0||minTotal>0?0:Math.max(0,spent-need2),dts,daysLeft:dts-post,deadline:addD(rE,-post),rEnd:rE,rKey,rStart,rMonth:rcm(c),curDue:dueOf(c,curSt)});
 }
 /* ===== Sao kê ngân hàng (từ email) làm chuẩn cho dư nợ cần thanh toán ===== */
 let SKM={};
@@ -569,7 +571,9 @@ function derive(){
   D.cards.sort(cmpCard);
   const ref=TODAY(),st=S(),cm=Object.fromEntries(D.cards.map(c=>[c.id,c]));
   V={ref,cards:{},tx:{},pay:[],spend:[],instA:[]};
-  const used={};
+  const used={},totSp={};
+  /* Doanh số tối thiểu cả thẻ/kỳ (VD JCB Wellbeing: tổng chi từ 10tr mới được hoàn) */
+  D.txs.forEach(t=>{const c=cm[t.cardId];if(t.kind!=='spend'||!c||!(+c.minTotal>0))return;const k=t.cardId+'|'+ymd(rEnd(c,pd(t.ts)));totSp[k+'|P']=(totSp[k+'|P']||0)+(+t.amount||0);if(t.status!=='planned')totSp[k]=(totSp[k]||0)+(+t.amount||0)});
   D.txs.filter(t=>t.kind==='spend').sort((a,b)=>String(a.ts).localeCompare(String(b.ts))).forEach(t=>{
     const c=cm[t.cardId],amt=+t.amount||0,r=c&&(c.rules||[]).find(x=>String(x.code)===String(t.mcc));
     const fp=t.feePct!=null&&t.feePct!==''?+t.feePct:(r?+r.feePct||0:0),ff=t.feeFix!=null&&t.feeFix!==''?+t.feeFix:(r?+r.feeFix||0:0),fee=amt*fp/100+ff;
@@ -577,9 +581,11 @@ function derive(){
     const tiers=r&&Array.isArray(r.tiers)&&r.tiers.length?r.tiers:null;
     if(tiers){const k=t.cardId+'|T'+r.code+'|'+cyc,b=used[k]||0,f=v=>Math.max(0,...tiers.filter(x=>v>=+x.min).map(x=>+x.amt));rf=Math.max(0,f(b+amt)-f(b));if(t.status!=='planned')used[k]=b+amt}
     else if(r){const raw=amt*(+r.pct||0)/100,cap=+r.target>0?+r.target:Infinity,k=t.cardId+'|'+r.code+'|'+cyc;if(c&&+c.capAll>0){const k2=t.cardId+'|ALL|'+cyc;rf=Math.max(0,Math.min(raw,cap-(used[k]||0),+c.capAll-(used[k2]||0)));if(t.status!=='planned')used[k2]=(used[k2]||0)+rf}else rf=Math.max(0,Math.min(raw,cap-(used[k]||0)));if(t.status!=='planned')used[k]=(used[k]||0)+rf}
+    const minOk=!(c&&+c.minTotal>0)||(totSp[t.cardId+'|'+cyc+(t.status==='planned'?'|P':'')]||0)>=+c.minTotal;
+    if(!minOk)rf=0;
     if(t.refundFinal!=null&&t.refundFinal!=='')rf=+t.refundFinal;
     if(r&&+r.rfFee>0)rf=rf*(1-(+r.rfFee)/100); /* phí trên tiền hoàn (VD BIDV Infinite 2,5%) */
-    V.tx[t.id]={fee,back:amt-fee,refund:rf,profit:rf-fee,cycle:cyc,rule:r||null,fp,ff};
+    V.tx[t.id]={fee,back:amt-fee,refund:rf,profit:rf-fee,cycle:cyc,rule:r||null,fp,ff,minOk};
   });
   SKM=skBuild();
   D.cards.forEach(c=>{
@@ -699,9 +705,10 @@ function progress(c,x){
 const ib=(a,id,ic,t,cls='')=>`<button type="button" class="ib ${cls}" data-a="${a}" data-id="${esc(id)}" title="${t}" aria-label="${t}">${ico(ic,16)}</button>`;
 function miniProg(c,x){
   const rs=(c.rules||[]).filter(r=>+r.need>0);if(!rs.length)return '';
-  const rows=rs.map(r=>{const sp=sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&String(t.mcc)===String(r.code)&&V.tx[t.id]&&V.tx[t.id].cycle===x.rKey),t=>t.amount),need=+r.need,done=sp>=need||(+c.capAll>0&&x.spent>=x.need);
+  const tot=x.minTotal>0?(()=>{const done=x.totSpend>=x.minTotal;return `<div class="mp"><div class="mph"><span>${done?'✓ ':''}Tổng doanh số thẻ (điều kiện)</span><b>${fmt(x.totSpend)} / ${fmt(x.minTotal)}</b></div>${prog(done?x.minTotal:Math.min(x.totSpend,x.minTotal*0.95),x.minTotal,done?'g':x.totSpend?'w':'')}${!done?`<div class="hint" style="font-size:11px;text-align:right;margin-top:2px">thiếu <b class="neg">${fmt(x.totMiss)} ₫</b> mới được hoàn</div>`:''}</div>`})():'';
+  const rows=tot+rs.map(r=>{const sp=sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&String(t.mcc)===String(r.code)&&V.tx[t.id]&&V.tx[t.id].cycle===x.rKey),t=>t.amount),need=+r.need,done=sp>=need||(+c.capAll>0&&x.spent>=x.need);
     return `<div class="mp"><div class="mph"><span>${done?'✓ ':''}${+c.capAll>0&&r!==rs[0]?'hoặc ':''}MCC ${esc(r.code)}</span><b>${fmt(sp)} / ${fmt(need)}</b></div>${prog(done?need:Math.min(sp,need*0.95),need,done?'g':sp?'w':'')}${!done&&sp>0?`<div class="hint" style="font-size:11px;text-align:right;margin-top:2px">thiếu <b class="neg">${fmt(Math.max(0,need-sp))} ₫</b></div>`:''}</div>`}).join('');
-  const ok=x.spent>=x.need;
+  const ok=x.spent>=x.need&&!(x.totMiss>0);
   return `<div class="mpw"><div class="hint mpt">Tiến độ chi tiêu · ${x.rMonth?'tháng '+dm(x.rStart)+'–'+dm(x.rEnd):'SK '+dm(x.curSt)}</div>${rows}<div class="hint mpf">${ok?'<span class="pos">Đã cà đủ</span>':'Còn thiếu '+money(x.miss)+(x.dts<=S().spendDays?' · còn '+x.daysLeft+' ngày':'')}</div></div>`;
 }
 function cardRow(c){
@@ -971,7 +978,7 @@ function pgThongBao(){
     ${prog(st==='done'?x.need:Math.min(x.spent,x.need*0.95),x.need,st==='done'?'g':x.spent?'w':'')}
     <div class="tbm ${st==='done'?'ok':urgent?'bad':'wn'}">${st==='done'?'Chúc mừng! Bạn đã đạt chi tiêu mục tiêu.'+(x.over>0?' Vượt mức '+fmt(x.over)+' ₫.':''):'Còn thiếu <b>'+fmt(x.miss)+' ₫</b> để đạt mục tiêu — hạn giao dịch '+dm(x.deadline)+' (còn '+x.daysLeft+' ngày).'}</div>
     ${post?`<div class="hint" style="margin-top:8px;color:var(--bad)">Lưu ý: chỉ còn ${Math.max(0,x.daysLeft)} ngày để giao dịch kịp ${x.rMonth?'kỳ hoàn tiền':'sao kê'} này (do cần thời gian chờ ngân hàng lên bút toán ${post} ngày).</div>`:''}
-    <div class="hint" style="margin-top:10px">Chi tiết MCC cần cà:</div>${rs.map(r=>{const sp=sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&String(t.mcc)===String(r.code)&&ymd(rEnd(c,pd(t.ts)))===x.rKey),t=>t.amount),ok=sp>=+r.need||(+c.capAll>0&&x.spent>=x.need);return `<div class="tbr ${ok?'ok':''}"><span class="row" style="flex-wrap:nowrap;gap:8px">${+c.capAll>0&&r!==rs[0]?'<span class="hint">hoặc</span>':''}${chip(esc(r.code),'a')}<span class="hint">${esc(r.cond||'')}</span></span><b>${ok?'✓ Đã đủ ('+fmt(sp)+' ₫)':'Còn thiếu '+fmt(+r.need-sp)+' ₫'}</b></div>`}).join('')}</div>`;
+    <div class="hint" style="margin-top:10px">Chi tiết MCC cần cà:</div>${x.minTotal>0?`<div class="tbr ${x.totMiss>0?'':'ok'}"><span class="hint">Tổng doanh số thẻ trong kỳ (điều kiện hoàn)</span><b>${x.totMiss>0?'Còn thiếu '+fmt(x.totMiss)+' ₫':'✓ Đã đủ ('+fmt(x.totSpend)+' ₫)'}</b></div>`:''}${rs.map(r=>{const sp=sum(D.txs.filter(t=>t.cardId===c.id&&t.kind==='spend'&&t.status!=='planned'&&String(t.mcc)===String(r.code)&&ymd(rEnd(c,pd(t.ts)))===x.rKey),t=>t.amount),ok=sp>=+r.need||(+c.capAll>0&&x.spent>=x.need);return `<div class="tbr ${ok?'ok':''}"><span class="row" style="flex-wrap:nowrap;gap:8px">${+c.capAll>0&&r!==rs[0]?'<span class="hint">hoặc</span>':''}${chip(esc(r.code),'a')}<span class="hint">${esc(r.cond||'')}</span></span><b>${ok?'✓ Đã đủ ('+fmt(sp)+' ₫)':'Còn thiếu '+fmt(+r.need-sp)+' ₫'}</b></div>`}).join('')}</div>`;
   };
   return hd('Thông báo','Quản lý chu kỳ sao kê thông minh')+(V.nAlert?banners('all'):'')+
   `<div class="tabs" role="tablist">${tabs.map(t=>`<button class="${f===t[0]?'on':''}" data-a="tbf" data-id="${t[0]||'all'}">${t[1]} <span class="mut">${t[2]}</span></button>`).join('')}</div>`+
@@ -1057,13 +1064,13 @@ function cardForm(c0){
   ${fld('4 số cuối',inp('last4',c.last4,'1234','inputmode="numeric" maxlength="4"'))}${fld('Số cuối thẻ phi vật lý / thẻ ảo (nếu có)',inp('alt4',c.alt4||'','VD: 8920 (nhiều số cách nhau dấu phẩy)'))}${fld('Hết hạn (MM/YY)',inp('expiry',c.expiry,'12/29','maxlength="5"'))}${fld('Chủ thẻ',ownerBox('name="owner"',c.owner))}${fld('Thiết bị chứa thẻ/tài khoản',inp('device',c.device,'VD: điện thoại 1'))}
   ${fld('Số TK nhận thanh toán (VietQR)',inp('vietqrAcc',c.vietqrAcc,'Số tài khoản/thẻ của ngân hàng','inputmode="numeric"'),'w2')}
   ${fld('Hạn mức (₫)',minp('limit',c.limit))}${fld('Hạn mức huy động (₫)',minp('mobLimit',c.mobLimit))}
-  ${fld('Ngày sao kê (1–31)',inp('stmtDay',c.stmtDay,'20','inputmode="numeric" required'))}${fld('Ngày đến hạn TT (1–31)',inp('dueDay',c.dueDay,'15','inputmode="numeric" required'))}${fld('Thời gian bút toán (ngày)',inp('postDays',c.postDays??'','2','inputmode="numeric"'))}${fld('Phí hội viên / phí cố định (₫)',minp('memFee',c.memFee))}${fld('Thu mỗi (tháng)',inp('memMonths',c.memMonths||'','1','inputmode="numeric"'))}${fld('Hoàn tối đa chung cả thẻ/kỳ (₫) — trống nếu mỗi MCC có trần riêng',minp('capAll',c.capAll),'w2')}
+  ${fld('Ngày sao kê (1–31)',inp('stmtDay',c.stmtDay,'20','inputmode="numeric" required'))}${fld('Ngày đến hạn TT (1–31)',inp('dueDay',c.dueDay,'15','inputmode="numeric" required'))}${fld('Thời gian bút toán (ngày)',inp('postDays',c.postDays??'','2','inputmode="numeric"'))}${fld('Phí hội viên / phí cố định (₫)',minp('memFee',c.memFee))}${fld('Thu mỗi (tháng)',inp('memMonths',c.memMonths||'','1','inputmode="numeric"'))}${fld('Hoàn tối đa chung cả thẻ/kỳ (₫) — trống nếu mỗi MCC có trần riêng',minp('capAll',c.capAll),'w2')}${fld('Doanh số tối thiểu cả thẻ/kỳ để được hoàn (₫) — trống nếu không có',minp('minTotal',c.minTotal),'w2')}
   ${fld('Dư nợ ban đầu (₫)',minp('openingDebt',c.openingDebt))}
   ${fld('Kỳ hoàn tiền',sel('rcMode',[['stmt','Theo kỳ sao kê'],['month','Theo tháng dương lịch (từ ngày 1) — thẻ BIDV']],rcm(c)?'month':'stmt'),'w2')}
   ${fld('Vai trò',sel('role',[['main','Thẻ chính'],['sub','Thẻ phụ (dùng chung hạn mức)']],c.role||'main'))}
   ${fld('Chấp sổ tiết kiệm',`<select name="linkedSavingId">${savOpts(c.bank,c.owner,c.linkedSavingId,c.id)}</select>`,'w2')}</div>`,
   {cid:c.id||"",onSubmit:async o=>{
-    const n={...c};delete n.__clone;Object.assign(n,{bank:o.bank,type:o.type.trim(),name:o.name.trim(),last4:o.last4.replace(/\D/g,'').slice(-4),alt4:String(o.alt4||'').split(/[^0-9]+/).filter(x=>x.length===4).join(', '),expiry:o.expiry.trim(),owner:o.owner.trim(),device:o.device.trim(),vietqrAcc:o.vietqrAcc.replace(/\s/g,''),limit:num(o.limit),mobLimit:num(o.mobLimit),stmtDay:Math.min(31,Math.max(1,num(o.stmtDay)||1)),dueDay:Math.min(31,Math.max(1,num(o.dueDay)||1)),postDays:num(o.postDays),memFee:num(o.memFee),memMonths:Math.max(1,num(o.memMonths)||1),capAll:num(o.capAll),openingDebt:num(o.openingDebt),role:o.role,rcMonth:o.rcMode==='month',rules:c.rules||[]});
+    const n={...c};delete n.__clone;Object.assign(n,{bank:o.bank,type:o.type.trim(),name:o.name.trim(),last4:o.last4.replace(/\D/g,'').slice(-4),alt4:String(o.alt4||'').split(/[^0-9]+/).filter(x=>x.length===4).join(', '),expiry:o.expiry.trim(),owner:o.owner.trim(),device:o.device.trim(),vietqrAcc:o.vietqrAcc.replace(/\s/g,''),limit:num(o.limit),mobLimit:num(o.mobLimit),stmtDay:Math.min(31,Math.max(1,num(o.stmtDay)||1)),dueDay:Math.min(31,Math.max(1,num(o.dueDay)||1)),postDays:num(o.postDays),memFee:num(o.memFee),memMonths:Math.max(1,num(o.memMonths)||1),capAll:num(o.capAll),minTotal:num(o.minTotal),openingDebt:num(o.openingDebt),role:o.role,rcMonth:o.rcMode==='month',rules:c.rules||[]});
     const old=c.linkedSavingId||'';n.linkedSavingId=o.linkedSavingId||'';
     await put('cards',n);
     for(const s of D.savings){if(s.cardId===n.id&&s.id!==n.linkedSavingId)await put('savings',{...s,cardId:''});if(s.id===n.linkedSavingId&&s.cardId!==n.id){await put('savings',{...s,cardId:n.id})}}
@@ -1071,7 +1078,7 @@ function cardForm(c0){
   }});
 }
 function cloneCard(c){
-  const k={};['bank','type','owner','device','vietqrAcc','limit','mobLimit','memFee','memMonths','capAll','stmtDay','dueDay','postDays','role','shared','rcMonth'].forEach(f=>{if(c[f]!==undefined)k[f]=c[f]});
+  const k={};['bank','type','owner','device','vietqrAcc','limit','mobLimit','memFee','memMonths','capAll','minTotal','stmtDay','dueDay','postDays','role','shared','rcMonth'].forEach(f=>{if(c[f]!==undefined)k[f]=c[f]});
   k.name=c.name||'';k.rules=JSON.parse(JSON.stringify(c.rules||[]));k.__clone=1;k.__src=c;cardForm(k);
 }
 /* Clone nhiều thẻ: phần chung lấy từ thẻ gốc, mỗi dòng là một thẻ mới */
@@ -1093,7 +1100,7 @@ function cloneForm(c){
   <h4 class="clh">Thông tin chung</h4>
   <div class="fg">${fld('Ngân hàng',sel('bank',BANKS,c.bank||'VIB'))}${fld('Loại thẻ',inp('type',c.type,'Visa / Mastercard…','list="dl-type"'))}${fld('Số TK nhận thanh toán (VietQR)',inp('vietqrAcc',c.vietqrAcc,'Số tài khoản/thẻ','inputmode="numeric"'),'w2')}
   ${fld('Hạn mức (₫)',minp('limit',c.limit))}${fld('Hạn mức huy động (₫)',minp('mobLimit',c.mobLimit))}
-  ${fld('Ngày sao kê (1–31)',inp('stmtDay',c.stmtDay,'20','inputmode="numeric" required'))}${fld('Ngày đến hạn TT (1–31)',inp('dueDay',c.dueDay,'15','inputmode="numeric" required'))}${fld('Thời gian bút toán (ngày)',inp('postDays',c.postDays??'','2','inputmode="numeric"'))}${fld('Phí hội viên / phí cố định (₫)',minp('memFee',c.memFee))}${fld('Thu mỗi (tháng)',inp('memMonths',c.memMonths||'','1','inputmode="numeric"'))}${fld('Hoàn tối đa chung cả thẻ/kỳ (₫) — trống nếu mỗi MCC có trần riêng',minp('capAll',c.capAll),'w2')}
+  ${fld('Ngày sao kê (1–31)',inp('stmtDay',c.stmtDay,'20','inputmode="numeric" required'))}${fld('Ngày đến hạn TT (1–31)',inp('dueDay',c.dueDay,'15','inputmode="numeric" required'))}${fld('Thời gian bút toán (ngày)',inp('postDays',c.postDays??'','2','inputmode="numeric"'))}${fld('Phí hội viên / phí cố định (₫)',minp('memFee',c.memFee))}${fld('Thu mỗi (tháng)',inp('memMonths',c.memMonths||'','1','inputmode="numeric"'))}${fld('Hoàn tối đa chung cả thẻ/kỳ (₫) — trống nếu mỗi MCC có trần riêng',minp('capAll',c.capAll),'w2')}${fld('Doanh số tối thiểu cả thẻ/kỳ để được hoàn (₫) — trống nếu không có',minp('minTotal',c.minTotal),'w2')}
   ${fld('Kỳ hoàn tiền',sel('rcMode',[['stmt','Theo kỳ sao kê'],['month','Theo tháng dương lịch (từ ngày 1) — thẻ BIDV']],rcm(c)?'month':'stmt'),'w2')}
   ${fld('Vai trò',sel('role',[['main','Thẻ chính'],['sub','Thẻ phụ (dùng chung hạn mức)']],c.role||'main'))}</div>
   <div class="row clbar"><h4 class="clh" style="margin:0">Danh sách thẻ mới</h4><label class="row" style="gap:8px;flex-wrap:nowrap">Số lượng <input id="clq" type="number" min="1" max="${CLMAX}" value="1" style="width:80px" aria-label="Số lượng thẻ cần tạo"></label></div>
@@ -1103,7 +1110,7 @@ function cloneForm(c){
     const rows=clRows();
     if(!rows.length){toast('Nhập số lượng thẻ');return}
     const bad=rows.findIndex(r=>!r.name);if(bad>=0){toast('Thẻ số '+(bad+1)+' chưa có tên');return}
-    const base={bank:o.bank,type:(o.type||'').trim(),vietqrAcc:(o.vietqrAcc||'').replace(/\s/g,''),limit:num(o.limit),mobLimit:num(o.mobLimit),stmtDay:Math.min(31,Math.max(1,num(o.stmtDay)||1)),dueDay:Math.min(31,Math.max(1,num(o.dueDay)||1)),postDays:num(o.postDays),memFee:num(o.memFee),memMonths:Math.max(1,num(o.memMonths)||1),capAll:num(o.capAll),openingDebt:0,role:o.role,rcMonth:o.rcMode==='month',linkedSavingId:''};
+    const base={bank:o.bank,type:(o.type||'').trim(),vietqrAcc:(o.vietqrAcc||'').replace(/\s/g,''),limit:num(o.limit),mobLimit:num(o.mobLimit),stmtDay:Math.min(31,Math.max(1,num(o.stmtDay)||1)),dueDay:Math.min(31,Math.max(1,num(o.dueDay)||1)),postDays:num(o.postDays),memFee:num(o.memFee),memMonths:Math.max(1,num(o.memMonths)||1),capAll:num(o.capAll),minTotal:num(o.minTotal),openingDebt:0,role:o.role,rcMonth:o.rcMode==='month',linkedSavingId:''};
     if(c.shared!==undefined)base.shared=c.shared;
     for(const r of rows)await put('cards',{...base,...r,rules:JSON.parse(JSON.stringify(c.rules||[]))});
     closeModal();toast('Đã tạo '+rows.length+' thẻ từ thẻ gốc');
@@ -2419,6 +2426,22 @@ async function hcSync(auto){
   HC_BUSY=false;render();
 }
 /* Đọc lại số tiền GD chờ duyệt (thông báo app/dán tay) bằng bộ đọc mới — sửa lỗi lấy nhầm số trong nội dung như "T10.2026" */
+/* 28/11/2026: thẻ JCB Wellbeing — hoàn 8099 (10%) HOẶC 6300 (6%), trần chung 400k/kỳ, tổng doanh số kỳ từ 10tr mới được hoàn */
+async function wbMig(){
+  if(S().wbMig1)return;
+  const L=D.cards.filter(c=>/well ?-?being/.test(noAccent(String((c.bank||'')+' '+(c.type||'')+' '+(c.name||''))).toLowerCase()));
+  if(!L.length)return;
+  for(const c of L){
+    const rules=(c.rules||[]).map(r=>({...r})),r8=rules.find(r=>String(r.code)==='8099');
+    if(r8){if(!(+r8.pct>0))r8.pct=10;if(!(+r8.target>0))r8.target=400000;if(!(+r8.need>0))r8.need=Math.round(r8.target/r8.pct*100)}
+    else rules.push({code:'8099',cond:'',pct:10,target:400000,need:4000000,feePct:0,feeFix:0,rfFee:0});
+    const b=rules.find(r=>String(r.code)==='8099');
+    if(!rules.some(r=>String(r.code)==='6300'))rules.push({code:'6300',cond:'hoặc 8099 — trần chung 400k',pct:6,target:400000,need:6666667,feePct:+b.feePct||0,feeFix:+b.feeFix||0,rfFee:+b.rfFee||0});
+    await put('cards',{...c,rules,capAll:400000,minTotal:10000000});
+  }
+  await put('settings',{...S(),id:'main',wbMig1:1});
+  toast('Đã cập nhật '+L.length+' thẻ JCB Wellbeing: 8099 hoặc 6300');
+}
 async function hcReparse(){
   for(const it of D.inbox.filter(x=>x.status==='pending'&&(x.src==='android'||x.src==='paste')&&x.raw&&!(x.rp>=1))){
     const p=ntfParse(it.raw,{date:it.ts||nowLocal()});const o={...it,rp:1};
