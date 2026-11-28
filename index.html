@@ -863,7 +863,10 @@ function pgDoanhSo(){
   }
   const ms=dsSpan(from,to),d10=t=>String(t.ts).slice(0,10);
   const dsN=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[đĐ]/g,'d').toLowerCase().trim(),dq=dsN(UI.dsQ);
-  const dsHit=c=>!dq||dq.split(/\s+/).every(w=>dsN([c.bank,c.name,c.last4,c.owner].join(' ')).includes(w));
+  const dsO=c=>!UI.dsOwner||(c.owner||'').trim()===UI.dsOwner,dsB=c=>!UI.dsBank||c.bank===UI.dsBank;
+  const dsBanks=[...new Set(D.cards.map(c=>c.bank).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi',{sensitivity:'base'})),dsOwners=[...new Set(D.cards.map(c=>(c.owner||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi',{sensitivity:'base'}));
+  const dsHit=c=>dsO(c)&&dsB(c)&&(!dq||dq.split(/\s+/).every(w=>dsN([c.bank,c.name,c.last4,c.owner].join(' ')).includes(w)));
+  if(UI.dsCard&&!D.cards.some(c=>c.id===UI.dsCard&&dsHit(c)))UI.dsCard='';
   const qIds=new Set(D.cards.filter(dsHit).map(c=>c.id));
   const T=t=>V.tx[t.id]||{},ok=t=>t.kind==='spend'&&t.status!=='planned'&&(UI.dsCard?t.cardId===UI.dsCard:qIds.has(t.cardId));
   const nM=Math.max(1,ms.filter(k=>k<=cmKey()).length);
@@ -877,10 +880,12 @@ function pgDoanhSo(){
   return `<div class="row"><div class="tabs" role="tablist" aria-label="Kỳ xem doanh số" style="flex-wrap:wrap">${PS.map(o=>`<button class="${p===o[0]?'on':''}" data-a="dsp" data-id="${o[0]}">${o[1]}</button>`).join('')}</div></div>
   <div class="row">${p==='y'?`<select data-f="dsY" aria-label="Năm" style="width:auto">${[...yrs].sort().reverse().map(y=>`<option value="${y}"${y===yr?' selected':''}>Năm ${y}</option>`).join('')}</select>`:''}
   ${p==='c'?`<label class="row" style="gap:6px;flex-wrap:nowrap"><span class="hint">Từ ngày</span><input type="date" data-f="dsFrom" value="${from}" max="${to}" style="width:auto"></label><label class="row" style="gap:6px;flex-wrap:nowrap"><span class="hint">Đến ngày</span><input type="date" data-f="dsTo" value="${to}" min="${from}" style="width:auto"></label>`:''}
+  <select data-f="dsOwner" aria-label="Chủ thẻ" style="width:auto"><option value="">Tất cả chủ thẻ</option>${dsOwners.map(o=>`<option value="${esc(o)}"${o===UI.dsOwner?' selected':''}>${esc(o)} (${D.cards.filter(c=>(c.owner||'').trim()===o&&dsB(c)).length} thẻ)</option>`).join('')}</select>
+  <select data-f="dsBank" aria-label="Ngân hàng" style="width:auto"><option value="">Tất cả ngân hàng</option>${dsBanks.map(b=>`<option value="${esc(b)}"${b===UI.dsBank?' selected':''}>${esc(b)} (${D.cards.filter(c=>c.bank===b&&dsO(c)).length} thẻ)</option>`).join('')}</select>
   <input type="search" data-f="dsQ" value="${esc(UI.dsQ||'')}" placeholder="🔍 Tìm thẻ: ngân hàng, tên, 4 số cuối…" aria-label="Tìm thẻ" autocomplete="off" style="width:auto;flex:1 1 220px;max-width:340px">
-  <select data-f="dsCard" aria-label="Thẻ" style="width:auto;min-width:180px"><option value="">${dq?'Tất cả thẻ khớp ('+qIds.size+')':'Tất cả thẻ'}</option>${D.cards.filter(c=>dsHit(c)||c.id===UI.dsCard).slice().sort(cmpCard).map(c=>`<option value="${c.id}"${c.id===UI.dsCard?' selected':''}>${cname(c)}${c.owner?' — '+esc(c.owner):''}</option>`).join('')}</select>
-  ${dq||UI.dsCard?`<button class="btn s" data-a="dsclr">Xoá lọc</button>`:''}</div>
-  ${dq&&!qIds.size?`<div class="ban y">Không tìm thấy thẻ nào khớp “${esc(UI.dsQ)}”</div>`:''}
+  <select data-f="dsCard" aria-label="Thẻ" style="width:auto;min-width:180px"><option value="">${dq||UI.dsBank||UI.dsOwner?'Tất cả thẻ khớp ('+qIds.size+')':'Tất cả thẻ'}</option>${D.cards.filter(c=>dsHit(c)).slice().sort(cmpCard).map(c=>`<option value="${c.id}"${c.id===UI.dsCard?' selected':''}>${cname(c)}${c.owner?' — '+esc(c.owner):''}</option>`).join('')}</select>
+  ${dq||UI.dsCard||UI.dsBank||UI.dsOwner?`<button class="btn s" data-a="dsclr">Xoá lọc</button>`:''}</div>
+  ${(dq||UI.dsBank||UI.dsOwner)&&!qIds.size?`<div class="ban y">Không có thẻ nào khớp bộ lọc</div>`:''}
   <p class="hint" style="margin:-6px 0 0">${range} · tính giao dịch chi tiêu đã cà, không tính giao dịch dự kiến</p>
   <div class="grid">${kpi('Doanh số',money(tot),chTxt)}${kpi('Số giao dịch',fmt(L.length),'TB '+money(L.length?tot/L.length:0)+'/GD')}${kpi('TB mỗi tháng',money(tot/nM),nM+' tháng'+(nM<ms.length?' đã qua':''))}${kpi('Hoàn − Phí',money(rf-fee),'Hoàn '+mshort(rf)+' · Phí '+mshort(fee),rf-fee>=0?'pos':'neg')}</div>
   ${ms.length>1?`<div class="card"><h3>Doanh số theo tháng</h3>${bars(ms.map(lbl),[{n:'Doanh số',c:'var(--c1)',v:ms.map(k=>sum(L.filter(t=>mkey(t.ts)===k),t=>t.amount))}])}</div>`:''}
@@ -1465,7 +1470,7 @@ const ACT={
   rept:id=>{UI.repT=id;render()},
   kyclr:()=>{UI.kyBank='';UI.kyCard='';UI.kyOwner='';render()},
   dsp:id=>{UI.dsP=id;render()},
-  dsclr:()=>{UI.dsQ='';UI.dsCard='';render()},
+  dsclr:()=>{UI.dsQ='';UI.dsCard='';UI.dsBank='';UI.dsOwner='';render()},
   'ban-tog':()=>{let o=false;try{o=localStorage.getItem('ban_open')==='1';localStorage.setItem('ban_open',o?'0':'1')}catch(e){}render()},
   'csv-imp':()=>{const i=$('#impcsv');if(i)i.click()},
   cf:id=>{const i=id.indexOf('|'),k=id.slice(0,i),v=id.slice(i+1);UI[k]=UI[k]===v?'':v;render()},
